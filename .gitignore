@@ -1,8 +1,6 @@
-aws/
-azure/
-gcp/gcp-infra.sh
 **/*notes*
 **/__pycache__/**
 git
 .vscode
 **/venv
+**/_tests*
