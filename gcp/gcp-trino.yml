@@ -1,0 +1,562 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: trino
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: trino-coordinator
+  namespace: trino
+data:
+  config.properties: |
+    coordinator=true
+    node-scheduler.include-coordinator=false
+    http-server.http.port=8080
+    discovery.uri=http://trino:8080
+    query.max-memory=4GB
+    query.max-memory-per-node=2GB
+    
+  jvm.config: |
+    -server
+    -Xmx4G
+    -XX:+UseG1GC
+    -XX:G1HeapRegionSize=32M
+    -XX:+ExplicitGCInvokesConcurrent
+    -XX:+HeapDumpOnOutOfMemoryError
+    -XX:+ExitOnOutOfMemoryError
+    -Djdk.attach.allowAttachSelf=true
+    
+  node.properties: |
+    node.environment=production
+    node.data-dir=/data/trino
+    
+  log.properties: |
+    io.trino=INFO
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: trino-worker
+  namespace: trino
+data:
+  config.properties: |
+    coordinator=false
+    http-server.http.port=8080
+    discovery.uri=http://trino:8080
+    query.max-memory=4GB
+    query.max-memory-per-node=2GB
+    
+  jvm.config: |
+    -server
+    -Xmx4G
+    -XX:+UseG1GC
+    -XX:G1HeapRegionSize=32M
+    -XX:+ExplicitGCInvokesConcurrent
+    -XX:+HeapDumpOnOutOfMemoryError
+    -XX:+ExitOnOutOfMemoryError
+    -Djdk.attach.allowAttachSelf=true
+    
+  node.properties: |
+    node.environment=production
+    node.data-dir=/data/trino
+    
+  log.properties: |
+    io.trino=INFO
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: trino-catalog
+  namespace: trino
+data:
+  hive.properties: |
+    connector.name=hive
+    hive.metastore.uri=thrift://hive-metastore:9083
+    hive.non-managed-table-writes-enabled=true
+    fs.native-s3.enabled=true
+    s3.endpoint=http://minio.minio.svc.cluster.local:9000
+    s3.path-style-access=true
+    s3.aws-access-key=admin
+    s3.aws-secret-key=password123
+    s3.region=us-east-1    
+    
+  iceberg.properties: |
+    connector.name=iceberg
+    iceberg.catalog.type=hive_metastore
+    hive.metastore.uri=thrift://hive-metastore:9083
+    fs.native-s3.enabled=true
+    s3.endpoint=http://minio.minio.svc.cluster.local:9000
+    s3.path-style-access=true
+    s3.aws-access-key=admin
+    s3.aws-secret-key=password123
+    s3.region=us-east-1
+    
+  delta.properties: |
+    connector.name=delta_lake
+    hive.metastore.uri=thrift://hive-metastore:9083
+    delta.enable-non-concurrent-writes=true
+    fs.native-s3.enabled=true
+    s3.endpoint=http://minio.minio.svc.cluster.local:9000
+    s3.path-style-access=true
+    s3.aws-access-key=admin
+    s3.aws-secret-key=password123
+    s3.region=us-east-1
+    
+  lance.properties: |
+    connector.name=delta_lake
+    hive.metastore.uri=thrift://hive-metastore:9083
+    delta.enable-non-concurrent-writes=true
+    fs.native-s3.enabled=true
+    s3.endpoint=http://minio.minio.svc.cluster.local:9000
+    s3.path-style-access=true
+    s3.aws-access-key=admin
+    s3.aws-secret-key=password123
+    s3.region=us-east-1
+    delta.metadata.cache-ttl=5m
+    delta.metadata.live-files.cache-ttl=5m
+    delta.per-transaction-metastore-cache-maximum-size=1000
+    
+---
+# Headless service per Trino
+apiVersion: v1
+kind: Service
+metadata:
+  name: trino
+  namespace: trino
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8080
+      targetPort: 8080
+      name: http
+  selector:
+    app: trino
+    component: coordinator
+---
+# LoadBalancer per accesso esterno a Trino
+apiVersion: v1
+kind: Service
+metadata:
+  name: trino-external
+  namespace: trino
+spec:
+  type: LoadBalancer
+  ports:
+    - port: 8080
+      targetPort: 8080
+      name: http
+  selector:
+    app: trino
+    component: coordinator
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: trino-coordinator
+  namespace: trino
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: trino
+      component: coordinator
+  template:
+    metadata:
+      labels:
+        app: trino
+        component: coordinator
+    spec:
+      containers:
+      - name: trino
+        image: trinodb/trino:latest
+        ports:
+        - containerPort: 8080
+          name: http
+        volumeMounts:
+        - name: config
+          mountPath: /etc/trino
+        - name: catalog
+          mountPath: /etc/trino/catalog
+        env:
+        - name: AWS_ACCESS_KEY_ID
+          value: "admin"
+        - name: AWS_SECRET_ACCESS_KEY
+          value: "password123"
+        resources:
+          requests:
+            memory: "4Gi"
+            cpu: "2000m"
+          limits:
+            memory: "8Gi"
+            cpu: "4000m"
+        livenessProbe:
+          httpGet:
+            path: /v1/info
+            port: 8080
+          initialDelaySeconds: 120
+          periodSeconds: 30
+          timeoutSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /v1/info
+            port: 8080
+          initialDelaySeconds: 60
+          periodSeconds: 10
+          timeoutSeconds: 5
+      volumes:
+      - name: config
+        configMap:
+          name: trino-coordinator
+      - name: catalog
+        configMap:
+          name: trino-catalog
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: trino-worker
+  namespace: trino
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: trino
+      component: worker
+  template:
+    metadata:
+      labels:
+        app: trino
+        component: worker
+    spec:
+      # Affinity per distribuire i worker su nodi diversi
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: component
+                  operator: In
+                  values:
+                  - worker
+              topologyKey: kubernetes.io/hostname
+      containers:
+      - name: trino
+        image: trinodb/trino:latest
+        ports:
+        - containerPort: 8080
+          name: http
+        volumeMounts:
+        - name: config
+          mountPath: /etc/trino
+        - name: catalog
+          mountPath: /etc/trino/catalog
+        env:
+        - name: AWS_ACCESS_KEY_ID
+          value: "admin"
+        - name: AWS_SECRET_ACCESS_KEY
+          value: "password123"
+        resources:
+          requests:
+            memory: "4Gi"
+            cpu: "2000m"
+          limits:
+            memory: "8Gi"
+            cpu: "4000m"
+        livenessProbe:
+          httpGet:
+            path: /v1/info
+            port: 8080
+          initialDelaySeconds: 120
+          periodSeconds: 30
+          timeoutSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /v1/info
+            port: 8080
+          initialDelaySeconds: 60
+          periodSeconds: 10
+          timeoutSeconds: 5
+      volumes:
+      - name: config
+        configMap:
+          name: trino-worker
+      - name: catalog
+        configMap:
+          name: trino-catalog
+---
+# Hive Metastore Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: hive-metastore
+  namespace: trino
+spec:
+  type: ClusterIP
+  ports:
+    - port: 9083
+      targetPort: 9083
+      name: thrift
+  selector:
+    app: hive-metastore
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hive-metastore-config
+  namespace: trino
+data:
+  metastore-site.xml: |
+    <configuration>
+      <property>
+        <name>metastore.thrift.uris</name>
+        <value>thrift://hive-metastore:9083</value>
+      </property>
+      <property>
+        <name>metastore.task.threads.always</name>
+        <value>org.apache.hadoop.hive.metastore.events.EventCleanerTask</value>
+      </property>
+      <property>
+        <name>metastore.expression.proxy</name>
+        <value>org.apache.hadoop.hive.metastore.DefaultPartitionExpressionProxy</value>
+      </property>
+      <property>
+        <name>javax.jdo.option.ConnectionURL</name>
+        <value>jdbc:postgresql://postgres:5432/metastore</value>
+      </property>
+      <property>
+        <name>javax.jdo.option.ConnectionDriverName</name>
+        <value>org.postgresql.Driver</value>
+      </property>
+      <property>
+        <name>javax.jdo.option.ConnectionUserName</name>
+        <value>hive</value>
+      </property>
+      <property>
+        <name>javax.jdo.option.ConnectionPassword</name>
+        <value>hivepassword</value>
+      </property>
+      <property>
+        <name>metastore.warehouse.dir</name>
+        <value>s3a://warehouse/</value>
+      </property>
+      <property>
+        <name>metastore.create.as.acid</name>
+        <value>false</value>
+      </property>
+    </configuration>
+  
+  core-site.xml: |
+    <configuration>
+      <property>
+        <name>fs.s3a.access.key</name>
+        <value>admin</value>
+      </property>
+      <property>
+        <name>fs.s3a.secret.key</name>
+        <value>password123</value>
+      </property>
+      <property>
+        <name>fs.s3a.endpoint</name>
+        <value>http://minio.minio.svc.cluster.local:9000</value>
+      </property>
+      <property>
+        <name>fs.s3a.path.style.access</name>
+        <value>true</value>
+      </property>
+      <property>
+        <name>fs.s3a.connection.ssl.enabled</name>
+        <value>false</value>
+      </property>
+      <property>
+        <name>fs.s3a.impl</name>
+        <value>org.apache.hadoop.fs.s3a.S3AFileSystem</value>
+      </property>
+      <property>
+        <name>fs.s3a.aws.credentials.provider</name>
+        <value>org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider</value>
+      </property>
+    </configuration>
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hive-metastore
+  namespace: trino
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hive-metastore
+  template:
+    metadata:
+      labels:
+        app: hive-metastore
+    spec:
+      initContainers:
+      - name: download-postgres-driver
+        image: curlimages/curl:latest
+        command:
+        - sh
+        - -c
+        - |
+          curl -L -o /tmp/postgresql.jar https://jdbc.postgresql.org/download/postgresql-42.7.1.jar
+        volumeMounts:
+        - name: postgres-driver
+          mountPath: /tmp
+      - name: download-hadoop-aws
+        image: curlimages/curl:latest
+        command:
+        - sh
+        - -c
+        - |
+          curl -L -o /tmp/hadoop-aws-3.3.4.jar https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-aws/3.3.4/hadoop-aws-3.3.4.jar
+          curl -L -o /tmp/aws-java-sdk-bundle-1.12.262.jar https://repo1.maven.org/maven2/com/amazonaws/aws-java-sdk-bundle/1.12.262/aws-java-sdk-bundle-1.12.262.jar
+        volumeMounts:
+        - name: hadoop-aws-jars
+          mountPath: /tmp    
+      containers:
+      - name: metastore
+        image: apache/hive:4.0.0
+        command:
+        - sh
+        - -c
+        - |
+          cp /driver/postgresql.jar /opt/hive/lib/
+          cp /hadoop-aws/*.jar /opt/hive/lib/
+          ls -la /opt/hive/lib/ | grep -E "(hadoop-aws|aws-java-sdk|postgresql)"
+          /opt/hive/bin/schematool -dbType postgres -initSchema || true
+          /opt/hive/bin/hive --service metastore
+        ports:
+        - containerPort: 9083
+          name: thrift
+        env:
+        - name: SERVICE_NAME
+          value: "metastore"
+        - name: DB_DRIVER
+          value: "postgres"
+        - name: SERVICE_OPTS
+          value: "-Djavax.jdo.option.ConnectionDriverName=org.postgresql.Driver -Djavax.jdo.option.ConnectionURL=jdbc:postgresql://postgres:5432/metastore -Djavax.jdo.option.ConnectionUserName=hive -Djavax.jdo.option.ConnectionPassword=hivepassword"
+        volumeMounts:
+        - name: metastore-config
+          mountPath: /opt/hive/conf/metastore-site.xml
+          subPath: metastore-site.xml
+        - name: metastore-config
+          mountPath: /opt/hive/conf/core-site.xml
+          subPath: core-site.xml
+        - name: postgres-driver
+          mountPath: /driver
+        - name: hadoop-aws-jars
+          mountPath: /hadoop-aws
+        securityContext:
+          runAsUser: 0  
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+        livenessProbe:
+          tcpSocket:
+            port: 9083
+          initialDelaySeconds: 120
+          periodSeconds: 30
+        readinessProbe:
+          tcpSocket:
+            port: 9083
+          initialDelaySeconds: 60
+          periodSeconds: 10
+      volumes:
+      - name: metastore-config
+        configMap:
+          name: hive-metastore-config
+      - name: postgres-driver
+        emptyDir: {}
+      - name: hadoop-aws-jars
+        emptyDir: {}
+---
+# PostgreSQL Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: trino
+spec:
+  type: ClusterIP
+  ports:
+    - port: 5432
+      targetPort: 5432
+  selector:
+    app: postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: trino
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:15
+        ports:
+        - containerPort: 5432
+        env:
+        - name: POSTGRES_DB
+          value: "metastore"
+        - name: POSTGRES_USER
+          value: "hive"
+        - name: POSTGRES_PASSWORD
+          value: "hivepassword"
+        - name: PGDATA
+          value: /var/lib/postgresql/data/pgdata
+        volumeMounts:
+        - name: postgres-storage
+          mountPath: /var/lib/postgresql/data
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+        livenessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - hive
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - hive
+          initialDelaySeconds: 10
+          periodSeconds: 5
+  volumeClaimTemplates:
+  - metadata:
+      name: postgres-storage
+    spec:
+      accessModes:
+        - ReadWriteOnce
+      storageClassName: "standard-rwo"
+      resources:
+        requests:
+          storage: 10Gi

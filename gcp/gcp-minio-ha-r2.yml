@@ -1,0 +1,153 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: minio
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+  namespace: minio
+spec:
+  clusterIP: None
+  ports:
+    - port: 9000
+      name: api
+    - port: 9001
+      name: console
+  selector:
+    app: minio
+---
+# LoadBalancer interno per l'API (opzionale, se serve accesso interno)
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio-api-internal
+  namespace: minio
+  annotations:
+    cloud.google.com/load-balancer-type: "Internal"
+spec:
+  type: LoadBalancer
+  ports:
+    - port: 9000
+      targetPort: 9000
+      name: api
+  selector:
+    app: minio
+---
+# LoadBalancer ESTERNO per la console MinIO
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio-console
+  namespace: minio
+  annotations:
+    # Rimuovi questa annotation per avere un LoadBalancer esterno
+    # cloud.google.com/load-balancer-type: "Internal"
+spec:
+  type: LoadBalancer
+  ports:
+    - port: 9001
+      targetPort: 9001
+      name: console
+      protocol: TCP
+  selector:
+    app: minio
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: minio
+  namespace: minio
+spec:
+  serviceName: minio
+  replicas: 2
+  selector:
+    matchLabels:
+      app: minio
+  template:
+    metadata:
+      labels:
+        app: minio
+    spec:
+      # Affinità per distribuire i pod su nodi diversi
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - minio
+              topologyKey: kubernetes.io/hostname
+      containers:
+      - name: minio
+        image: minio/minio:latest
+        args:
+        - server
+        - http://minio-{0...1}.minio.minio.svc.cluster.local/data
+        - --console-address
+        - ":9001"
+        env:
+        - name: MINIO_ROOT_USER
+          valueFrom:
+            secretKeyRef:
+              name: minio-secret
+              key: root-user
+        - name: MINIO_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: minio-secret
+              key: root-password
+        ports:
+        - containerPort: 9000
+          name: api
+        - containerPort: 9001
+          name: console
+        volumeMounts:
+        - name: data
+          mountPath: /data
+        livenessProbe:
+          httpGet:
+            path: /minio/health/live
+            port: 9000
+          initialDelaySeconds: 120
+          periodSeconds: 20
+        readinessProbe:
+          httpGet:
+            path: /minio/health/ready
+            port: 9000
+          initialDelaySeconds: 120
+          periodSeconds: 20
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes: 
+        - ReadWriteOnce
+      # Storage class per GCP - usa pd-ssd per performance
+      storageClassName: "standard-rwo"
+      resources:
+        requests:
+          storage: 20Gi
+---
+# Secret per credenziali (MODIFICA QUESTI VALORI!)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: minio-secret
+  namespace: minio
+type: Opaque
+stringData:
+  root-user: "admin"
+  root-password: "password123"
