@@ -4,6 +4,64 @@ kind: Namespace
 metadata:
   name: trino
 ---
+# Secret per le password degli utenti
+apiVersion: v1
+kind: Secret
+metadata:
+  name: trino-password-db
+  namespace: trino
+type: Opaque
+stringData:
+  password.db: |
+    admin:$2y$10$gaWywOyrZ3HaNha3tlEZBO6uTr6ysax38S.IWVIqeC7oJWVdFieXG
+    user1:$2y$10$vK2SY1F7LFc1jxgl5Hf0helcRVoBeEhaznkqOsVOKRaZlaw92IFSq
+---
+# Secret per la comunicazione interna
+apiVersion: v1
+kind: Secret
+metadata:
+  name: trino-shared-secret
+  namespace: trino
+type: Opaque
+stringData:
+  shared-secret: "my-super-secret-internal-communication-key-change-this-in-production"
+---
+# Secret per i certificati TLS (self-signed per produzione)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: trino-tls-secret
+  namespace: trino
+type: kubernetes.io/tls
+stringData:
+  # Certificato self-signed (sostituire con certificato valido in produzione)
+  tls.crt: |
+    -----BEGIN CERTIFICATE-----
+    MIIDazCCAlOgAwIBAgIUX7fU8fJZ8JZ8JZ8JZ8JZ8JZ8JZ8wDQYJKoZIhvcNAQEL
+    BQAwRTELMAkGA1UEBhMCSVQxEzARBgNVBAgMClNvbWUtU3RhdGUxITAfBgNVBAoM
+    GEludGVybmV0IFdpZGdpdHMgUHR5IEx0ZDAeFw0yNDAxMDEwMDAwMDBaFw0yNTAx
+    MDEwMDAwMDBaMEUxCzAJBgNVBAYTAklUMRMwEQYDVQQIDApTb21lLVN0YXRlMSEw
+    HwYDVQQKDBhJbnRlcm5ldCBXaWRnaXRzIFB0eSBMdGQwggEiMA0GCSqGSIb3DQEB
+    AQUAA4IBDwAwggEKAoIBAQC7VJTUt9Us8cKjMzEfYyjiWA4R4/M2bS1+fWIcPm7t
+    WksjAvqXQG9pHCJQXGGXUJX0VHjqJ5VZmZbTkEmq4VmWcz7qM+nKN5cSMKnZMKnZ
+    MKnZMKnZMKnZMKnZMKnZMKnZMKnZMKnZMKnZMKnZMKnZMKnZMKnZMKnZMKnZMKnZ
+    MKnZMKnZMKnZMKnZMKnZMKnZMKnZMKnZMKnZMKnZMKnZMKnZMKnZMKnZMKnZMKnZ
+    AQIDAQABMA0GCSqGSIb3DQEBCwUAA4IBAQAtCx+rqTgYqNWqNqNqNqNqNqNqNqNq
+    NqNqNqNqNqNqNqNqNqNqNqNqNqNqNqNqNqNqNqNqNqNqNqNqNqNqNqNqNqNqNqNq
+    NqNqNqNqNqNqNqNqNqNqNqNqNqNqNqNqNqNqNqNqNqNqNqNqNqNqNqNqNqNqNqNq
+    -----END CERTIFICATE-----
+  tls.key: |
+    -----BEGIN PRIVATE KEY-----
+    MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7VJTUt9Us8cKj
+    MzEfYyjiWA4R4/M2bS1+fWIcPm7tWksjAvqXQG9pHCJQXGGXUJX0VHjqJ5VZmZbT
+    kEmq4VmWcz7qM+nKN5cSMKnZMKnZMKnZMKnZMKnZMKnZMKnZMKnZMKnZMKnZMKnZ
+    MKnZMKnZMKnZMKnZMKnZMKnZMKnZMKnZMKnZMKnZMKnZMKnZMKnZMKnZMKnZMKnZ
+    MKnZMKnZMKnZMKnZMKnZMKnZAgMBAAECggEAXxKXxKXxKXxKXxKXxKXxKXxKXxKX
+    xKXxKXxKXxKXxKXxKXxKXxKXxKXxKXxKXxKXxKXxKXxKXxKXxKXxKXxKXxKXxKXx
+    KXxKXxKXxKXxKXxKXxKXxKXxKXxKXxKXxKXxKXxKXxKXxKXxKXxKXxKXxKXxKXxK
+    XxKXxKXxKXxKXxKXxKXxKXxKXxKXxKXxKXxKXxKXxKXxKXxKXxKXxKXxKXxKXxKX
+    -----END PRIVATE KEY-----
+---
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -14,9 +72,22 @@ data:
     coordinator=true
     node-scheduler.include-coordinator=false
     http-server.http.port=8080
+    http-server.https.enabled=true
+    http-server.https.port=8443
+    http-server.https.keystore.path=/etc/trino/tls/keystore.jks
+    http-server.https.keystore.key=changeit
+    http-server.authentication.type=PASSWORD
+    internal-communication.shared-secret=${ENV:TRINO_SHARED_SECRET}
+    internal-communication.https.required=false
     discovery.uri=http://trino:8080
     query.max-memory=2GB
     query.max-memory-per-node=1GB
+    
+  password-authenticator.properties: |
+    password-authenticator.name=file
+    file.password-file=/etc/trino/auth/password.db
+    file.refresh-period=5s
+    file.auth-token-cache.max-size=1000
     
   jvm.config: |
     -server
@@ -44,6 +115,12 @@ data:
   config.properties: |
     coordinator=false
     http-server.http.port=8080
+    http-server.https.enabled=true
+    http-server.https.port=8443
+    http-server.https.keystore.path=/etc/trino/tls/keystore.jks
+    http-server.https.keystore.key=changeit
+    internal-communication.shared-secret=${ENV:TRINO_SHARED_SECRET}
+    internal-communication.https.required=false
     discovery.uri=http://trino:8080
     query.max-memory=2GB
     query.max-memory-per-node=1GB
@@ -139,6 +216,9 @@ metadata:
 spec:
   type: ClusterIP
   ports:
+    - port: 8443
+      targetPort: 8443
+      name: https
     - port: 8080
       targetPort: 8080
       name: http
@@ -154,6 +234,10 @@ metadata:
 spec:
   type: NodePort
   ports:
+    - port: 8443
+      targetPort: 8443
+      nodePort: 30443
+      name: https
     - port: 8080
       targetPort: 8080
       nodePort: 30080
@@ -179,18 +263,71 @@ spec:
         app: trino
         component: coordinator
     spec:
+      initContainers:
+      - name: generate-keystore
+        image: eclipse-temurin:17-jre-alpine
+        command:
+        - sh
+        - -c
+        - |
+          set -e
+          apk add --no-cache openssl
+          
+          # Genera certificato self-signed
+          openssl req -x509 -newkey rsa:2048 -nodes \
+            -keyout /tmp/keystore/tls.key \
+            -out /tmp/keystore/tls.crt \
+            -days 365 \
+            -subj "/CN=trino/O=Trino/C=IT"
+          
+          # Crea PKCS12
+          openssl pkcs12 -export \
+            -in /tmp/keystore/tls.crt \
+            -inkey /tmp/keystore/tls.key \
+            -out /tmp/keystore/keystore.p12 \
+            -password pass:changeit \
+            -name trino
+          
+          # Converti in JKS
+          keytool -importkeystore \
+            -srckeystore /tmp/keystore/keystore.p12 \
+            -srcstoretype PKCS12 \
+            -srcstorepass changeit \
+            -destkeystore /tmp/keystore/keystore.jks \
+            -deststoretype JKS \
+            -deststorepass changeit \
+            -noprompt
+          
+          chmod 644 /tmp/keystore/keystore.jks
+          echo "Keystore generato con successo"
+        volumeMounts:
+        - name: keystore
+          mountPath: /tmp/keystore
       containers:
       - name: trino
         image: trinodb/trino:latest
         ports:
         - containerPort: 8080
           name: http
+        - containerPort: 8443
+          name: https
         volumeMounts:
         - name: config
           mountPath: /etc/trino
         - name: catalog
           mountPath: /etc/trino/catalog
+        - name: password-db
+          mountPath: /etc/trino/auth
+          readOnly: true
+        - name: keystore
+          mountPath: /etc/trino/tls
+          readOnly: true
         env:
+        - name: TRINO_SHARED_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: trino-shared-secret
+              key: shared-secret
         - name: AWS_ACCESS_KEY_ID
           value: "admin"
         - name: AWS_SECRET_ACCESS_KEY
@@ -221,6 +358,12 @@ spec:
       - name: catalog
         configMap:
           name: trino-catalog
+      - name: password-db
+        secret:
+          secretName: trino-password-db
+          defaultMode: 0644
+      - name: keystore
+        emptyDir: {}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -239,18 +382,68 @@ spec:
         app: trino
         component: worker
     spec:
+      initContainers:
+      - name: generate-keystore
+        image: eclipse-temurin:17-jre-alpine
+        command:
+        - sh
+        - -c
+        - |
+          set -e
+          apk add --no-cache openssl
+          
+          # Genera certificato self-signed
+          openssl req -x509 -newkey rsa:2048 -nodes \
+            -keyout /tmp/keystore/tls.key \
+            -out /tmp/keystore/tls.crt \
+            -days 365 \
+            -subj "/CN=trino/O=Trino/C=IT"
+          
+          # Crea PKCS12
+          openssl pkcs12 -export \
+            -in /tmp/keystore/tls.crt \
+            -inkey /tmp/keystore/tls.key \
+            -out /tmp/keystore/keystore.p12 \
+            -password pass:changeit \
+            -name trino
+          
+          # Converti in JKS
+          keytool -importkeystore \
+            -srckeystore /tmp/keystore/keystore.p12 \
+            -srcstoretype PKCS12 \
+            -srcstorepass changeit \
+            -destkeystore /tmp/keystore/keystore.jks \
+            -deststoretype JKS \
+            -deststorepass changeit \
+            -noprompt
+          
+          chmod 644 /tmp/keystore/keystore.jks
+          echo "Keystore generato con successo"
+        volumeMounts:
+        - name: keystore
+          mountPath: /tmp/keystore
       containers:
       - name: trino
         image: trinodb/trino:latest
         ports:
         - containerPort: 8080
           name: http
+        - containerPort: 8443
+          name: https
         volumeMounts:
         - name: config
           mountPath: /etc/trino
         - name: catalog
           mountPath: /etc/trino/catalog
+        - name: keystore
+          mountPath: /etc/trino/tls
+          readOnly: true
         env:
+        - name: TRINO_SHARED_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: trino-shared-secret
+              key: shared-secret
         - name: AWS_ACCESS_KEY_ID
           value: "admin"
         - name: AWS_SECRET_ACCESS_KEY
@@ -281,6 +474,8 @@ spec:
       - name: catalog
         configMap:
           name: trino-catalog
+      - name: keystore
+        emptyDir: {}
 ---
 # Hive Metastore (necessario per i cataloghi Hive, Iceberg e Delta Lake)
 apiVersion: v1
