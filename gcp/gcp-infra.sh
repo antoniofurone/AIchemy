@@ -91,7 +91,7 @@ gcloud compute firewall-rules create ${NETWORK_NAME}-allow-health-checks \
 # Allow Trino coordinator-worker communication
 gcloud compute firewall-rules create ${NETWORK_NAME}-allow-trino \
   --network=${NETWORK_NAME} \
-  --allow=tcp:8080,tcp:9083 \
+  --allow=tcp:8080,tcp:9083,tcp:8443 \
   --source-ranges=10.0.0.0/8 \
   --target-tags=gke-node \
   --description="Allow Trino and Hive Metastore communication" \

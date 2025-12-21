@@ -10,9 +10,6 @@ export SUBNET_PRIVATE="aichemy-private-subnet-test-01"
 export CLUSTER_NAME="aichemy-test-cluster"
 export NAT_GATEWAY_NAME="aichemy-nat-gateway"
 export PUBLIC_IP_NAT="aichemy-nat-pip"
-export BASTION_NAME="aichemy-bastion"
-export BASTION_NSG="aichemy-bastion-nsg"
-export AKS_NSG="aichemy-aks-nsg"
 
 # Colori per output
 GREEN='\033[0;32m'
@@ -21,25 +18,25 @@ NC='\033[0m' # No Color
 
 echo -e "${BLUE}=== Setup Azure Network Infrastructure per AIchemy ===${NC}"
 
-# Imposta la subscription
+# Set subscription
 az account set --subscription ${SUBSCRIPTION_ID}
 
 # 1. Crea Resource Group
-echo -e "${GREEN}[1/10] Creazione Resource Group...${NC}"
+echo -e "${GREEN}[1/9] Creazione Resource Group...${NC}"
 az group create \
   --name ${RESOURCE_GROUP} \
   --location ${LOCATION}
 
 # 2. Crea Virtual Network
-echo -e "${GREEN}[2/10] Creazione Virtual Network...${NC}"
+echo -e "${GREEN}[2/9] Creazione Virtual Network...${NC}"
 az network vnet create \
   --resource-group ${RESOURCE_GROUP} \
   --name ${VNET_NAME} \
-  --address-prefixes 10.0.0.0/8 \
-  --location ${LOCATION}
+  --location ${LOCATION} \
+  --address-prefixes 10.0.0.0/8
 
-# 3. Crea Subnet Pubblica (per bastion e servizi esposti)
-echo -e "${GREEN}[3/10] Creazione Subnet Pubblica...${NC}"
+# 3. Crea Subnet Pubblica (per servizi esposti e bastion)
+echo -e "${GREEN}[3/9] Creazione Subnet Pubblica...${NC}"
 az network vnet subnet create \
   --resource-group ${RESOURCE_GROUP} \
   --vnet-name ${VNET_NAME} \
@@ -47,7 +44,7 @@ az network vnet subnet create \
   --address-prefixes 10.0.0.0/24
 
 # 4. Crea Subnet Privata (per AKS)
-echo -e "${GREEN}[4/10] Creazione Subnet Privata per AKS...${NC}"
+echo -e "${GREEN}[4/9] Creazione Subnet Privata per AKS...${NC}"
 az network vnet subnet create \
   --resource-group ${RESOURCE_GROUP} \
   --vnet-name ${VNET_NAME} \
@@ -55,16 +52,16 @@ az network vnet subnet create \
   --address-prefixes 10.1.0.0/20
 
 # 5. Crea Public IP per NAT Gateway
-echo -e "${GREEN}[5/10] Creazione Public IP per NAT Gateway...${NC}"
+echo -e "${GREEN}[5/9] Creazione Public IP per NAT Gateway...${NC}"
 az network public-ip create \
   --resource-group ${RESOURCE_GROUP} \
   --name ${PUBLIC_IP_NAT} \
+  --location ${LOCATION} \
   --sku Standard \
-  --allocation-method Static \
-  --location ${LOCATION}
+  --allocation-method Static
 
-# 6. Crea NAT Gateway
-echo -e "${GREEN}[6/10] Creazione NAT Gateway...${NC}"
+# 6. Crea NAT Gateway (per accesso internet da subnet privata)
+echo -e "${GREEN}[6/9] Creazione NAT Gateway...${NC}"
 az network nat gateway create \
   --resource-group ${RESOURCE_GROUP} \
   --name ${NAT_GATEWAY_NAME} \
@@ -72,94 +69,80 @@ az network nat gateway create \
   --public-ip-addresses ${PUBLIC_IP_NAT} \
   --idle-timeout 10
 
-# 7. Associa NAT Gateway alla subnet privata
-echo -e "${GREEN}[7/10] Associazione NAT Gateway alla subnet privata...${NC}"
+# Associa NAT Gateway alla subnet privata
 az network vnet subnet update \
   --resource-group ${RESOURCE_GROUP} \
   --vnet-name ${VNET_NAME} \
   --name ${SUBNET_PRIVATE} \
   --nat-gateway ${NAT_GATEWAY_NAME}
 
-# 8. Crea Network Security Group per AKS
-echo -e "${GREEN}[8/10] Configurazione Network Security Groups...${NC}"
+# 7. Network Security Groups
+echo -e "${GREEN}[7/9] Configurazione Network Security Groups...${NC}"
+
+# NSG per subnet pubblica
 az network nsg create \
   --resource-group ${RESOURCE_GROUP} \
-  --name ${AKS_NSG} \
+  --name ${SUBNET_PUBLIC}-nsg \
   --location ${LOCATION}
 
-# Allow internal communication
+# NSG per subnet privata (AKS)
+az network nsg create \
+  --resource-group ${RESOURCE_GROUP} \
+  --name ${SUBNET_PRIVATE}-nsg \
+  --location ${LOCATION}
+
+# Allow internal communication nella subnet privata
 az network nsg rule create \
   --resource-group ${RESOURCE_GROUP} \
-  --nsg-name ${AKS_NSG} \
-  --name AllowInternalCommunication \
+  --nsg-name ${SUBNET_PRIVATE}-nsg \
+  --name AllowVnetInbound \
   --priority 100 \
-  --source-address-prefixes 10.0.0.0/8 \
-  --destination-address-prefixes 10.0.0.0/8 \
-  --destination-port-ranges '*' \
-  --protocol '*' \
+  --source-address-prefixes VirtualNetwork \
+  --destination-address-prefixes VirtualNetwork \
   --access Allow \
+  --protocol '*' \
   --direction Inbound
 
 # Allow Trino coordinator-worker communication
 az network nsg rule create \
   --resource-group ${RESOURCE_GROUP} \
-  --nsg-name ${AKS_NSG} \
+  --nsg-name ${SUBNET_PRIVATE}-nsg \
   --name AllowTrino \
   --priority 110 \
   --source-address-prefixes 10.0.0.0/8 \
-  --destination-port-ranges 8080 9083 \
-  --protocol Tcp \
+  --destination-port-ranges 8080 9083 8443 \
   --access Allow \
+  --protocol Tcp \
   --direction Inbound
 
-# Allow Azure Load Balancer
+# Allow Azure Load Balancer health probes
 az network nsg rule create \
   --resource-group ${RESOURCE_GROUP} \
-  --nsg-name ${AKS_NSG} \
+  --nsg-name ${SUBNET_PRIVATE}-nsg \
   --name AllowAzureLoadBalancer \
   --priority 120 \
   --source-address-prefixes AzureLoadBalancer \
-  --destination-port-ranges '*' \
+  --access Allow \
   --protocol '*' \
-  --access Allow \
   --direction Inbound
 
-# Associa NSG alla subnet privata
-az network vnet subnet update \
-  --resource-group ${RESOURCE_GROUP} \
-  --vnet-name ${VNET_NAME} \
-  --name ${SUBNET_PRIVATE} \
-  --network-security-group ${AKS_NSG}
-
-# NSG per Bastion
-az network nsg create \
-  --resource-group ${RESOURCE_GROUP} \
-  --name ${BASTION_NSG} \
-  --location ${LOCATION}
-
-# Allow SSH from anywhere (da restringere in produzione)
-az network nsg rule create \
-  --resource-group ${RESOURCE_GROUP} \
-  --nsg-name ${BASTION_NSG} \
-  --name AllowSSH \
-  --priority 100 \
-  --source-address-prefixes '*' \
-  --destination-port-ranges 22 \
-  --protocol Tcp \
-  --access Allow \
-  --direction Inbound
-
-# Associa NSG alla subnet pubblica
+# Associa NSG alle subnet
 az network vnet subnet update \
   --resource-group ${RESOURCE_GROUP} \
   --vnet-name ${VNET_NAME} \
   --name ${SUBNET_PUBLIC} \
-  --network-security-group ${BASTION_NSG}
+  --network-security-group ${SUBNET_PUBLIC}-nsg
 
-# 9. Crea AKS Private Cluster
-echo -e "${GREEN}[9/10] Creazione AKS Private Cluster...${NC}"
+az network vnet subnet update \
+  --resource-group ${RESOURCE_GROUP} \
+  --vnet-name ${VNET_NAME} \
+  --name ${SUBNET_PRIVATE} \
+  --network-security-group ${SUBNET_PRIVATE}-nsg
 
-# Ottieni subnet ID
+# 8. Crea AKS Private Cluster
+echo -e "${GREEN}[8/9] Creazione AKS Private Cluster...${NC}"
+
+# Get subnet ID
 SUBNET_ID=$(az network vnet subnet show \
   --resource-group ${RESOURCE_GROUP} \
   --vnet-name ${VNET_NAME} \
@@ -170,69 +153,86 @@ az aks create \
   --resource-group ${RESOURCE_GROUP} \
   --name ${CLUSTER_NAME} \
   --location ${LOCATION} \
-  --network-plugin azure \
-  --vnet-subnet-id ${SUBNET_ID} \
-  --service-cidr 10.3.0.0/20 \
-  --dns-service-ip 10.3.0.10 \
-  --enable-private-cluster \
-  --private-dns-zone system \
-  --enable-managed-identity \
-  --node-vm-size Standard_D8s_v3 \
   --node-count 2 \
+  --node-vm-size Standard_D8s_v3 \
   --enable-cluster-autoscaler \
   --min-count 2 \
   --max-count 6 \
-  --node-osdisk-size 100 \
-  --node-osdisk-type Managed \
-  --zones 1 2 3 \
-  --enable-addons monitoring \
+  --network-plugin azure \
+  --vnet-subnet-id ${SUBNET_ID} \
+  --docker-bridge-address 172.17.0.1/16 \
+  --dns-service-ip 10.3.0.10 \
+  --service-cidr 10.3.0.0/20 \
+  --enable-private-cluster \
+  --enable-managed-identity \
   --enable-aad \
   --enable-azure-rbac \
-  --network-policy azure \
+  --enable-addons monitoring \
+  --enable-defender \
+  --node-osdisk-size 100 \
+  --node-osdisk-type Managed \
   --nodepool-labels workload=aichemy \
-  --generate-ssh-keys \
-  --tier standard
+  --zones 1 2 3 \
+  --kubernetes-version 1.28 \
+  --tier standard \
+  --network-policy azure \
+  --auto-upgrade-channel stable \
+  --node-resource-group ${RESOURCE_GROUP}-aks-nodes
 
-# 10. Crea Bastion Host
-echo -e "${GREEN}[10/10] Creazione Bastion Host...${NC}"
+# 9. Crea Bastion Host VM nella subnet pubblica
+echo -e "${GREEN}[9/9] Creazione Bastion Host VM...${NC}"
 
-# Public IP per bastion
+# Crea Public IP per Bastion
 az network public-ip create \
   --resource-group ${RESOURCE_GROUP} \
-  --name ${BASTION_NAME}-pip \
+  --name aichemy-bastion-pip \
+  --location ${LOCATION} \
   --sku Standard \
-  --allocation-method Static \
-  --location ${LOCATION}
+  --allocation-method Static
 
-# NIC per bastion
+# Crea NIC per Bastion
 az network nic create \
   --resource-group ${RESOURCE_GROUP} \
-  --name ${BASTION_NAME}-nic \
+  --name aichemy-bastion-nic \
+  --location ${LOCATION} \
   --vnet-name ${VNET_NAME} \
   --subnet ${SUBNET_PUBLIC} \
-  --public-ip-address ${BASTION_NAME}-pip \
-  --location ${LOCATION}
+  --public-ip-address aichemy-bastion-pip
 
-# VM Bastion
+# Allow SSH from Internet to bastion (limitato - considera di usare Azure Bastion invece)
+az network nsg rule create \
+  --resource-group ${RESOURCE_GROUP} \
+  --nsg-name ${SUBNET_PUBLIC}-nsg \
+  --name AllowSSH \
+  --priority 100 \
+  --source-address-prefixes 'Internet' \
+  --destination-port-ranges 22 \
+  --access Allow \
+  --protocol Tcp \
+  --direction Inbound
+
+# Crea Bastion VM
 az vm create \
   --resource-group ${RESOURCE_GROUP} \
-  --name ${BASTION_NAME} \
+  --name aichemy-bastion \
   --location ${LOCATION} \
-  --nics ${BASTION_NAME}-nic \
+  --nics aichemy-bastion-nic \
   --image Ubuntu2204 \
-  --size Standard_B1s \
+  --size Standard_B2s \
   --admin-username azureuser \
   --generate-ssh-keys \
-  --boot-diagnostics-storage ""
+  --os-disk-size-gb 30 \
+  --storage-sku StandardSSD_LRS
 
-# Installa Azure CLI e kubectl sul bastion
+# Install Azure CLI e kubectl sul bastion
 az vm run-command invoke \
   --resource-group ${RESOURCE_GROUP} \
-  --name ${BASTION_NAME} \
+  --name aichemy-bastion \
   --command-id RunShellScript \
   --scripts "
     curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
-    sudo az aks install-cli
+    curl -LO 'https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl'
+    sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
   "
 
 echo -e "${BLUE}=== Setup Completato! ===${NC}"
@@ -244,14 +244,13 @@ echo "  Subnet Pubblica: ${SUBNET_PUBLIC} (10.0.0.0/24)"
 echo "  Subnet Privata: ${SUBNET_PRIVATE} (10.1.0.0/20)"
 echo "  Service CIDR: 10.3.0.0/20"
 echo "  DNS Service IP: 10.3.0.10"
+echo "  Docker Bridge: 172.17.0.1/16"
 echo ""
 echo "Per connetterti al cluster da bastion:"
-echo "  1. ssh azureuser@\$(az network public-ip show -g ${RESOURCE_GROUP} -n ${BASTION_NAME}-pip --query ipAddress -o tsv)"
+echo "  1. ssh azureuser@\$(az network public-ip show -g ${RESOURCE_GROUP} -n aichemy-bastion-pip --query ipAddress -o tsv)"
 echo "  2. az login"
 echo "  3. az aks get-credentials --resource-group ${RESOURCE_GROUP} --name ${CLUSTER_NAME}"
 echo "  4. kubectl get nodes"
 echo ""
-echo "Per connetterti direttamente (richiede connettività alla VNet):"
-echo "  az aks get-credentials --resource-group ${RESOURCE_GROUP} --name ${CLUSTER_NAME}"
-echo ""
-echo "NOTA: Aggiorna SUBSCRIPTION_ID all'inizio dello script con il tuo Subscription ID"
+echo "NOTA: Per maggiore sicurezza, considera di usare Azure Bastion invece di una VM con SSH pubblico"
+echo "      oppure limita l'accesso SSH solo al tuo IP con --source-address-prefixes nella regola NSG"
