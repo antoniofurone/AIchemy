@@ -1,0 +1,2 @@
+# Apache Beam 2.60.0 supports Python 3.12 and numpy 1.26+
+apache-beam==2.60.0

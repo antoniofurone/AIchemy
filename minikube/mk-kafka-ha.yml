@@ -1,0 +1,190 @@
+---
+# Namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kafka
+---
+# Kafka Headless Service (for broker discovery)
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-headless
+  namespace: kafka
+spec:
+  ports:
+  - port: 9092
+    name: broker
+  - port: 9093
+    name: controller
+  clusterIP: None
+  selector:
+    app: kafka
+---
+# Kafka Service (for external access)
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka
+  namespace: kafka
+spec:
+  type: NodePort
+  ports:
+  - port: 9092
+    targetPort: 9092
+    nodePort: 30092
+    name: kafka
+  selector:
+    app: kafka
+---
+# Kafka StatefulSet (KRaft mode - no Zookeeper)
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: kafka
+  namespace: kafka
+spec:
+  serviceName: kafka-headless
+  replicas: 2
+  selector:
+    matchLabels:
+      app: kafka
+  template:
+    metadata:
+      labels:
+        app: kafka
+    spec:
+      initContainers:
+      - name: kafka-init
+        image: apache/kafka:3.8.1
+        command:
+        - bash
+        - -c
+        - |
+          NODE_ID=${HOSTNAME##*-}
+          
+          if [ ! -f /var/lib/kafka/data/meta.properties ]; then
+            echo "Formatting storage for node $NODE_ID with cluster ID $CLUSTER_ID"
+            
+            cat > /tmp/server.properties << EOF
+          node.id=$NODE_ID
+          process.roles=broker,controller
+          controller.quorum.voters=0@kafka-0.kafka-headless.kafka.svc.cluster.local:9093,1@kafka-1.kafka-headless.kafka.svc.cluster.local:9093
+          listeners=PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+          advertised.listeners=PLAINTEXT://${HOSTNAME}.kafka-headless.kafka.svc.cluster.local:9092
+          listener.security.protocol.map=PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+          controller.listener.names=CONTROLLER
+          inter.broker.listener.name=PLAINTEXT
+          log.dirs=/var/lib/kafka/data
+          EOF
+            
+            /opt/kafka/bin/kafka-storage.sh format -t $CLUSTER_ID -c /tmp/server.properties
+            echo "Storage formatted successfully"
+          else
+            echo "Storage already formatted for node $NODE_ID"
+          fi
+        env:
+        - name: CLUSTER_ID
+          value: "MkU3OEVBNTcwNTJENDM2Qk"
+        volumeMounts:
+        - name: datadir
+          mountPath: /var/lib/kafka/data
+      containers:
+      - name: kafka
+        image: apache/kafka:3.8.1
+        command:
+        - bash
+        - -c
+        - |
+          NODE_ID=${HOSTNAME##*-}
+          
+          # Create server.properties with dynamic values
+          cat > /tmp/server.properties << EOF
+          node.id=$NODE_ID
+          process.roles=broker,controller
+          controller.quorum.voters=0@kafka-0.kafka-headless.kafka.svc.cluster.local:9093,1@kafka-1.kafka-headless.kafka.svc.cluster.local:9093
+          listeners=PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+          advertised.listeners=PLAINTEXT://${HOSTNAME}.kafka-headless.kafka.svc.cluster.local:9092
+          listener.security.protocol.map=PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+          controller.listener.names=CONTROLLER
+          inter.broker.listener.name=PLAINTEXT
+          log.dirs=/var/lib/kafka/data
+          offsets.topic.replication.factor=2
+          transaction.state.log.replication.factor=2
+          transaction.state.log.min.isr=1
+          default.replication.factor=2
+          min.insync.replicas=1
+          auto.create.topics.enable=true
+          log.retention.hours=168
+          EOF
+          
+          exec /opt/kafka/bin/kafka-server-start.sh /tmp/server.properties
+        ports:
+        - containerPort: 9092
+          name: broker
+        - containerPort: 9093
+          name: controller
+        env:
+        - name: CLUSTER_ID
+          value: "MkU3OEVBNTcwNTJENDM2Qk"
+        
+        volumeMounts:
+        - name: datadir
+          mountPath: /var/lib/kafka/data
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+  volumeClaimTemplates:
+  - metadata:
+      name: datadir
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 5Gi
+---
+# Kafka UI (optional - for monitoring)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kafka-ui
+  namespace: kafka
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kafka-ui
+  template:
+    metadata:
+      labels:
+        app: kafka-ui
+    spec:
+      containers:
+      - name: kafka-ui
+        image: provectuslabs/kafka-ui:latest
+        ports:
+        - containerPort: 8080
+        env:
+        - name: KAFKA_CLUSTERS_0_NAME
+          value: "local"
+        - name: KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS
+          value: "kafka-0.kafka-headless.kafka.svc.cluster.local:9092,kafka-1.kafka-headless.kafka.svc.cluster.local:9092"
+---
+# Kafka UI Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-ui
+  namespace: kafka
+spec:
+  type: NodePort
+  ports:
+  - port: 8080
+    targetPort: 8080
+    nodePort: 30081
+  selector:
+    app: kafka-ui
