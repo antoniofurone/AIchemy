@@ -23,87 +23,62 @@ python wordcount_basic.py \
 Esempio Windows:
 ```bash
 python wordcount_basic.py --input C:/Temp/beam-test/sample.txt --output C:/Temp/beam-test/output
+python wordcount_basic.py --input gs://dataflow-samples/shakespeare/kinglear.txt --output C:/Temp/beam-test/output
 ```
 
 
-### Esecuzione su Flink
+### Esecuzione su Flink (Linux/macOS/Docker)
 
-**Passo 1:** Port-forward del Job Server (tutte le porte necessarie):
+⚠️ **NOTA IMPORTANTE:** FlinkRunner **non è supportato nativamente su Windows** a causa di un bug di Apache Beam con i percorsi dei file degli artefatti (`InvalidPathException: Illegal char <:>`). 
+
+**Se usi Windows:** usa **DirectRunner** (vedi sopra - funziona perfettamente) oppure esegui in un container Linux.
+
+#### Per Linux/macOS:
+
+**Passo 1:** Port-forward del Job Server:
 
 ```bash
 kubectl port-forward svc/beam-job-server 8098:8098 8097:8097 8099:8099 -n flink
 ```
 
 Le tre porte servono a:
-
-8098: Job submission
-8097: Expansion service
-8099: Artifact service (per caricare dipendenze Python)
+- 8098: Job submission
+- 8097: Expansion service  
+- 8099: Artifact service (dipendenze Python)
 
 **Passo 2:** Esegui il job:
 
 ```bash
 python wordcount_basic.py \
   --runner=FlinkRunner \
-  --job_endpoint=localhost:8098 \
+  --job_endpoint=127.0.0.1:8098 \
   --environment_type=LOOPBACK \
   --output=/tmp/wordcount_output
 ```
 
-Esempio Windows:
-```bash
-python wordcount_basic.py --runner=FlinkRunner --job_endpoint=localhost:8098 --environment_type=LOOPBACK --output C:/Temp/beam-test/output
-```
+#### Prerequisito: Python nei TaskManager
 
-**Note:**
-- `LOOPBACK` environment: Il worker SDK Python gira nello stesso processo del client
-- Più semplice di PROCESS e DOCKER per test locali
-- Non richiede Python/Docker nei TaskManager Flink
-- `PROCESS` environment: Flink esegue il worker SDK Python in un processo separato (non Docker)
-- Non richiede Docker installato nei nodi Flink
-- Richiede che Python e Apache Beam SDK siano disponibili nei TaskManager
-
-**⚠️ PREREQUISITO:** Devi prima installare Python + Beam SDK nei TaskManager. Esegui:
+Installa Python + Beam SDK nei TaskManager:
 
 ```bash
-# Accedi a un TaskManager pod
 kubectl exec -it -n flink deployment/flink-taskmanager -- bash
-
-# Installa Python e Beam SDK
 apt-get update && apt-get install -y python3 python3-pip
-pip install apache-beam[gcp]>=2.60.0
-
+pip3 install apache-beam[gcp]>=2.60.0
 exit
 ```
 
-**Oppure ricostruisci i pod con un'immagine custom che include Python (consigliato):**
+Oppure ricostruisci con immagine custom:
 
-Crea un Dockerfile:
 ```dockerfile
 FROM flink:1.18.1-scala_2.12-java11
 RUN apt-get update && apt-get install -y python3 python3-pip
-RUN pip install apache-beam[gcp]>=2.60.0
+RUN pip3 install apache-beam[gcp]>=2.60.0
 ```
 
-Poi:
 ```bash
 docker build -t flink-beam:1.18.1 .
-minikube image load flink-beam:1.18.1  # se usi Minikube
-
-# Aggiorna mk-flink.yml per usare: image: flink-beam:1.18.1
-```
-
-**Opzione Legacy (senza Job Server):**
-
-Se vuoi usare il JobManager direttamente (richiede port-forward separato):
-
-```bash
-kubectl port-forward svc/flink-jobmanager 8081:8081 -n flink
-python wordcount_basic.py \
-  --runner=FlinkRunner \
-  --flink_master=localhost:8081 \
-  --environment_type=LOOPBACK \
-  --output=/tmp/wordcount_output
+minikube image load flink-beam:1.18.1
+# Aggiorna mk-flink.yml: image: flink-beam:1.18.1
 ```
 
 ## 2. Kafka Streaming (Streaming)
@@ -183,8 +158,18 @@ Poi apri http://localhost:8081
 
 ## Troubleshooting
 
-Se il job fallisce:
+### Windows + FlinkRunner = InvalidPathException
 
-1. Controlla i log di Flink: `kubectl logs -n flink deployment/flink-jobmanager`
+**Errore:** `InvalidPathException: Illegal char <:> at index 3`
+
+**Causa:** Apache Beam ha un bug su Windows con i nomi dei file degli artefatti nel Job Server.
+
+**Soluzione:** 
+- ✅ Usa **DirectRunner** (funziona perfettamente su Windows)
+- Oppure esegui in ambiente Linux/WSL/Docker per usare FlinkRunner
+
+Se il job fallisce con DirectRunner:
+
+1. Controlla i log: `kubectl logs -n flink deployment/flink-jobmanager`
 2. Verifica TaskManager: `kubectl get pods -n flink`
-3. Controlla la Flink UI per dettagli errori
+3. UI Flink: `kubectl port-forward svc/flink-jobmanager-ui 8081:8081 -n flink` → http://localhost:8081

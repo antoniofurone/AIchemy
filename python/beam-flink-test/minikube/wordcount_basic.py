@@ -3,8 +3,11 @@
 Apache Beam WordCount - Esempio base con Flink Runner
 """
 import argparse
+import logging
 import apache_beam as beam
 from apache_beam.options.pipeline_options import PipelineOptions
+
+logging.basicConfig(level=logging.DEBUG)
 
 def run(argv=None):
     """Esegue la pipeline WordCount"""
