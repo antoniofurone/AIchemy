@@ -14,10 +14,13 @@ Esempio classico di conteggio parole.
 
 ### Esecuzione locale (DirectRunner)
 
+Potrebbe essere necessaria pip install apache-beam[gcp] se non gia' installata nell env.
+
+
 ```bash
 python wordcount_basic.py \
   --input gs://dataflow-samples/shakespeare/kinglear.txt \
-  --output /tmp/wordcount_output
+  --output /home/antonio/tmp/wordcount_output
 ```
 
 Esempio Windows:
@@ -46,6 +49,11 @@ Le tre porte servono a:
 - 8097: Expansion service  
 - 8099: Artifact service (dipendenze Python)
 
+per accedere alla ui da localhost:
+- minikube service flink-jobmanager-ui -n flink --url
+- kubectl port-forward svc/flink-jobmanager-ui 8081:8081 -n flink
+
+
 **Passo 2:** Esegui il job:
 
 ```bash
@@ -53,10 +61,24 @@ python wordcount_basic.py \
   --runner=FlinkRunner \
   --job_endpoint=127.0.0.1:8098 \
   --environment_type=LOOPBACK \
-  --output=/tmp/wordcount_output
+  --output=/home/antonio/tmp/wordcount_output
 ```
 
-#### Prerequisito: Python nei TaskManager
+
+python wordcount_basic.py \
+  --runner=FlinkRunner \
+  --job_endpoint=127.0.0.1:8098 \
+  --environment_type=DOCKER \
+  --output=/home/antonio/tmp/wordcount_output
+
+ python wordcount_basic.py \
+  --runner=FlinkRunner \
+  --job_endpoint=127.0.0.1:8098 \
+  --environment_type=PROCESS \
+  --environment_config='{"command": "python3"}' \
+  --output=/home/antonio/tmp/wordcount_output
+
+#### Prerequisito (x PROCESS): Python nei TaskManager
 
 Installa Python + Beam SDK nei TaskManager:
 
