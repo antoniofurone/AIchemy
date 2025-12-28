@@ -1,0 +1,329 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: flowise
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-pvc
+  namespace: flowise
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: "standard-rwo"
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: flowise-pvc
+  namespace: flowise
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: "standard-rwo"
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-config
+  namespace: flowise
+data:
+  POSTGRES_DB: "flowise"
+  POSTGRES_USER: "flowise"
+  POSTGRES_PASSWORD: "flowise123"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: flowise-config
+  namespace: flowise
+data:
+  DATABASE_TYPE: "postgres"
+  DATABASE_HOST: "postgres"
+  DATABASE_PORT: "5432"
+  DATABASE_NAME: "flowise"
+  DATABASE_USER: "flowise"
+  DATABASE_PASSWORD: "flowise123"
+  FLOWISE_PORT: "3000"
+  FLOWISE_USERNAME: "admin"
+  FLOWISE_PASSWORD: "admin123"
+  DEBUG: "false"
+  # GCP specific settings
+  APIKEY_PATH: "/opt/flowise/keys"
+  LOG_PATH: "/opt/flowise/logs"
+  SECRETKEY_PATH: "/opt/flowise/secrets"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: flowise
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - postgres
+              topologyKey: kubernetes.io/hostname
+      containers:
+      - name: postgres
+        image: postgres:15-alpine
+        env:
+        - name: POSTGRES_DB
+          valueFrom:
+            configMapKeyRef:
+              name: postgres-config
+              key: POSTGRES_DB
+        - name: POSTGRES_USER
+          valueFrom:
+            configMapKeyRef:
+              name: postgres-config
+              key: POSTGRES_USER
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            configMapKeyRef:
+              name: postgres-config
+              key: POSTGRES_PASSWORD
+        - name: PGDATA
+          value: "/var/lib/postgresql/data/pgdata"
+        ports:
+        - containerPort: 5432
+          name: postgres
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+        volumeMounts:
+        - name: postgres-storage
+          mountPath: /var/lib/postgresql/data
+        livenessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - pg_isready -U flowise
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+        readinessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - pg_isready -U flowise
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+      volumes:
+      - name: postgres-storage
+        persistentVolumeClaim:
+          claimName: postgres-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: flowise
+spec:
+  selector:
+    app: postgres
+  ports:
+  - port: 5432
+    targetPort: 5432
+    name: postgres
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flowise
+  namespace: flowise
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: flowise
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: flowise
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - flowise
+              topologyKey: kubernetes.io/hostname
+      containers:
+      - name: flowise
+        image: flowiseai/flowise:latest
+        env:
+        - name: DATABASE_TYPE
+          valueFrom:
+            configMapKeyRef:
+              name: flowise-config
+              key: DATABASE_TYPE
+        - name: DATABASE_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: flowise-config
+              key: DATABASE_HOST
+        - name: DATABASE_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: flowise-config
+              key: DATABASE_PORT
+        - name: DATABASE_NAME
+          valueFrom:
+            configMapKeyRef:
+              name: flowise-config
+              key: DATABASE_NAME
+        - name: DATABASE_USER
+          valueFrom:
+            configMapKeyRef:
+              name: flowise-config
+              key: DATABASE_USER
+        - name: DATABASE_PASSWORD
+          valueFrom:
+            configMapKeyRef:
+              name: flowise-config
+              key: DATABASE_PASSWORD
+        - name: FLOWISE_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: flowise-config
+              key: FLOWISE_PORT
+        - name: FLOWISE_USERNAME
+          valueFrom:
+            configMapKeyRef:
+              name: flowise-config
+              key: FLOWISE_USERNAME
+        - name: FLOWISE_PASSWORD
+          valueFrom:
+            configMapKeyRef:
+              name: flowise-config
+              key: FLOWISE_PASSWORD
+        - name: DEBUG
+          valueFrom:
+            configMapKeyRef:
+              name: flowise-config
+              key: DEBUG
+        - name: APIKEY_PATH
+          valueFrom:
+            configMapKeyRef:
+              name: flowise-config
+              key: APIKEY_PATH
+        - name: LOG_PATH
+          valueFrom:
+            configMapKeyRef:
+              name: flowise-config
+              key: LOG_PATH
+        - name: SECRETKEY_PATH
+          valueFrom:
+            configMapKeyRef:
+              name: flowise-config
+              key: SECRETKEY_PATH
+        ports:
+        - containerPort: 3000
+          name: http
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "4Gi"
+            cpu: "2000m"
+        volumeMounts:
+        - name: flowise-storage
+          mountPath: /home/node/app/.flowise
+        - name: flowise-keys
+          mountPath: /opt/flowise/keys
+        - name: flowise-logs
+          mountPath: /opt/flowise/logs
+        - name: flowise-secrets
+          mountPath: /opt/flowise/secrets
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 3000
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 3000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+      volumes:
+      - name: flowise-storage
+        persistentVolumeClaim:
+          claimName: flowise-pvc
+      - name: flowise-keys
+        emptyDir: {}
+      - name: flowise-logs
+        emptyDir: {}
+      - name: flowise-secrets
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: flowise
+  namespace: flowise
+  annotations:
+    # Per LoadBalancer interno (private VPC)
+    cloud.google.com/load-balancer-type: "Internal"
+    # Per LoadBalancer esterno (internet-facing), commentare la riga sopra e decommentare:
+    # cloud.google.com/neg: '{"ingress": true}'
+spec:
+  type: LoadBalancer
+  ports:
+  - port: 3000
+    targetPort: 3000
+    name: http
+  selector:
+    app: flowise
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 10800

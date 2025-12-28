@@ -1,0 +1,127 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: flink
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: flink
+  namespace: flink
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: flink-role
+  namespace: flink
+rules:
+- apiGroups: [""]
+  resources: ["pods", "pods/status", "pods/log", "configmaps", "services", "events"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "deployments/finalizers", "replicasets"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: flink-role-binding
+  namespace: flink
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: flink-role
+subjects:
+- kind: ServiceAccount
+  name: flink
+  namespace: flink
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: flink-cluster-role
+rules:
+- apiGroups: [""]
+  resources: ["pods", "pods/status"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: flink-cluster-role-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: flink-cluster-role
+subjects:
+- kind: ServiceAccount
+  name: flink
+  namespace: flink
+---
+apiVersion: flink.apache.org/v1beta1
+kind: FlinkDeployment
+metadata:
+  name: beam-flink-cluster
+  namespace: flink
+spec:
+  image: antoniofurone/flink-proc:latest
+  flinkVersion: v1_18
+  flinkConfiguration:
+    taskmanager.numberOfTaskSlots: "2"
+    state.backend: filesystem
+    state.checkpoints.dir: file:///tmp/flink-checkpoints
+    state.savepoints.dir: file:///tmp/flink-savepoints
+    execution.checkpointing.interval: "60s"
+    kubernetes.service-account: flink
+    high-availability: org.apache.flink.kubernetes.highavailability.KubernetesHaServicesFactory
+    high-availability.storageDir: file:///tmp/flink-ha
+    sdk.harnessLogLinesOnException: "100"
+    heartbeat.timeout: "300000"
+  serviceAccount: flink
+  jobManager:
+    resource:
+      memory: "1024m"
+      cpu: 1
+    replicas: 1
+    podTemplate:
+      spec:
+        serviceAccountName: flink
+        hostNetwork: true
+        dnsPolicy: ClusterFirstWithHostNet
+        securityContext:
+          runAsUser: 9999
+          runAsGroup: 9999
+          fsGroup: 9999
+        containers:
+        - name: flink-main-container
+          volumeMounts:
+          - name: flink-data
+            mountPath: /tmp
+        volumes:
+        - name: flink-data
+          emptyDir: {}
+  taskManager:
+    resource:
+      memory: "1024m"
+      cpu: 1
+    replicas: 2
+    podTemplate:
+      spec:
+        serviceAccountName: flink
+        hostNetwork: true
+        dnsPolicy: ClusterFirstWithHostNet
+        securityContext:
+          runAsUser: 9999
+          runAsGroup: 9999
+          fsGroup: 9999
+        containers:
+        - name: flink-main-container
+          volumeMounts:
+          - name: flink-data
+            mountPath: /tmp
+        volumes:
+        - name: flink-data
+          emptyDir: {}

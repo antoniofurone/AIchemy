@@ -9,87 +9,242 @@ The AIchemy platform provides a complete data lakehouse solution with support fo
 ### Architecture Diagram
 
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                      Minikube Single-Node Cluster                       │
-│                         (Local Development)                             │
-│                                                                         │
-│  ┌──────────────────────────────────────────────────────────────────┐   │
-│  │              Trino Namespace                                     │   │
-│  │                                                                  │   │
-│  │  ┌─────────────────┐         ┌─────────────────┐                 │   │
-│  │  │ Trino Coord.    │         │ Trino Worker    │                 │   │
-│  │  │ (1 replica)     │◄───────►│ (2 replicas)    │                 │   │
-│  │  │                 │         │                 │                 │   │
-│  │  │ • HTTP :8080    │         │ • HTTP :8080    │                 │   │
-│  │  │ • HTTPS :8443   │         │ • HTTPS :8443   │                 │   │
-│  │  │ • Auth: Password│         │ • Shared Secret │                 │   │
-│  │  └────────┬────────┘         └────────┬────────┘                 │   │
-│  │           │                           │                          │   │
-│  │           └───────────┬───────────────┘                          │   │
-│  │                       │                                          │   │
-│  │                       ▼                                          │   │
-│  │           ┌───────────────────────┐                              │   │
-│  │           │  Hive Metastore       │                              │   │
-│  │           │  (1 replica)          │                              │   │
-│  │           │                       │                              │   │
-│  │           │  • Thrift :9083       │                              │   │
-│  │           │  • S3 Support         │                              │   │
-│  │           └───────────┬───────────┘                              │   │
-│  │                       │                                          │   │
-│  │                       ▼                                          │   │
-│  │           ┌───────────────────────┐                              │   │
-│  │           │  PostgreSQL           │                              │   │
-│  │           │  (StatefulSet)        │                              │   │
-│  │           │                       │                              │   │
-│  │           │  • Port :5432         │                              │   │
-│  │           │  • Storage: emptyDir  │                              │   │
-│  │           └───────────────────────┘                              │   │
-│  │                                                                  │   │
-│  │  ┌────────────────────────────────────────────────┐              │   │
-│  │  │           NodePort Services                    │              │   │
-│  │  │                                                │              │   │
-│  │  │  • Trino HTTPS: 30443 → 8443                   │              │   │
-│  │  │  • Trino HTTP:  30080 → 8080                   │              │   │
-│  │  └────────────────────────────────────────────────┘              │   │
-│  └──────────────────────────────────────────────────────────────────┘   │
-│                                                                         │
-│  ┌──────────────────────────────────────────────────────────────────┐   │
-│  │              MinIO Namespace (HA)                                │   │
-│  │                                                                  │   │
-│  │  ┌──────┐  ┌──────┐  ┌──────┐  ┌──────┐                          │   │
-│  │  │MinIO │  │MinIO │  │MinIO │  │MinIO │                          │   │
-│  │  │Pod-0 │  │Pod-1 │  │Pod-2 │  │Pod-3 │                          │   │
-│  │  │      │  │      │  │      │  │      │                          │   │
-│  │  │:9000 │  │:9000 │  │:9000 │  │:9000 │                          │   │
-│  │  │:9001 │  │:9001 │  │:9001 │  │:9001 │                          │   │
-│  │  └───┬──┘  └───┬──┘  └───┬──┘  └───┬──┘                          │   │
-│  │      │         │         │         │                             │   │
-│  │      └─────────┴─────────┴─────────┘                             │   │
-│  │                    │                                             │   │
-│  │            ┌───────▼────────┐                                    │   │
-│  │            │ PersistentVols │                                    │   │
-│  │            │ (4x 10Gi)      │                                    │   │
-│  │            └────────────────┘                                    │   │
-│  └──────────────────────────────────────────────────────────────────┘   │
-│                                                                         │
-│  ┌──────────────────────────────────────────────────────────────────┐   │
-│  │                    Local Access                                  │   │
-│  │                                                                  │   │
-│  │  Port Forwarding:                                                │   │
-│  │  • kubectl port-forward -n trino svc/trino 8443:8443             │   │
-│  │  • kubectl port-forward -n minio svc/minio-console 9001:9001     │   │
-│  │                                                                  │   │
-│  │  Minikube Service:                                               │   │
-│  │  • minikube service trino-nodeport -n trino --url                │   │
-│  │  • minikube service minio-console -n minio --url                 │   │
-│  └──────────────────────────────────────────────────────────────────┘   │
-│                                                                         │
-└─────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                        Minikube Single-Node Cluster                             │
+│                           (Local Development)                                   │
+│                                                                                 │
+│  ┌──────────────────────────────────────────────────────────────────────────┐   │
+│  │              Kafka Namespace (Optional - Streaming)                      │   │
+│  │                                                                          │   │
+│  │  ┌────────────────┐         ┌────────────────┐      ┌──────────────┐     │   │
+│  │  │ Kafka Broker-0 │◄───────►│ Kafka Broker-1 │      │  Kafka UI    │     │   │
+│  │  │  (KRaft Mode)  │         │  (KRaft Mode)  │      │              │     │   │
+│  │  │                │         │                │      │  • Port:8080 │     │   │
+│  │  │ • Broker :9092 │         │ • Broker :9092 │      │  • NP: 30081 │     │   │
+│  │  │ • Control:9093 │         │ • Control:9093 │      └──────────────┘     │   │
+│  │  │ • Storage: 5Gi │         │ • Storage: 5Gi │                           │   │
+│  │  └────────────────┘         └────────────────┘                           │   │
+│  │                                                                          │   │
+│  │  NodePort: 30092 → 9092 (External access)                                │   │
+│  └──────────────────────────────────────────────────────────────────────────┘   │
+│                                                                                 │
+│  ┌──────────────────────────────────────────────────────────────────────────┐   │
+│  │              Flink Namespace (Optional - Stream Processing)              │   │
+│  │                                                                          │   │
+│  │  ┌───────────────────────────────────────────────┐                       │   │
+│  │  │  Flink Kubernetes Operator                    │                       │   │
+│  │  │                                               │                       │   │
+│  │  │  • Manages FlinkDeployment CRDs               │                       │   │
+│  │  │  • Dynamic JobManager/TaskManager scaling     │                       │   │
+│  │  │  • Checkpoint & Savepoint management          │                       │   │
+│  │  └───────────────────────────────────────────────┘                       │   │
+│  │              │                                                           │   │
+│  │              ▼  (Deploys on-demand)                                      │   │
+│  │  ┌──────────────────┐         ┌──────────────────┐                       │   │
+│  │  │  JobManager      │◄───────►│  TaskManager     │                       │   │
+│  │  │  (Session/Job)   │         │  (2+ replicas)   │                       │   │
+│  │  │                  │         │                  │                       │   │
+│  │  │  • RPC :6123     │         │  • Slots: 2      │                       │   │
+│  │  │  • Web :8081     │         │  • Memory: 1Gi   │                       │   │
+│  │  └──────────────────┘         └──────────────────┘                       │   │
+│  └──────────────────────────────────────────────────────────────────────────┘   │
+│                                                                                 │
+│  ┌──────────────────────────────────────────────────────────────────────────┐   │
+│  │              Flowise Namespace (Optional - AI Workflows)                 │   │
+│  │                                                                          │   │
+│  │  ┌──────────────────┐         ┌──────────────────┐                       │   │
+│  │  │  Flowise Server  │◄───────►│  PostgreSQL 15   │                       │   │
+│  │  │                  │         │                  │                       │   │
+│  │  │  • Port: 3000    │         │  • Port: 5432    │                       │   │
+│  │  │  • NP: 30300     │         │  • DB: flowise   │                       │   │
+│  │  │  • Auth: admin   │         │  • Storage: 10Gi │                       │   │
+│  │  │  • Storage: 5Gi  │         └──────────────────┘                       │   │
+│  │  │                  │                                                    │   │
+│  │  │  • LLM Chains    │                                                    │   │
+│  │  │  • Vector DBs    │                                                    │   │
+│  │  │  • Workflows API │                                                    │   │
+│  │  └──────────────────┘                                                    │   │
+│  └──────────────────────────────────────────────────────────────────────────┘   │
+│                                                                                 │
+│  ┌──────────────────────────────────────────────────────────────────────────┐   │
+│  │              Trino Namespace (Query Engine)                              │   │
+│  │                                                                          │   │
+│  │  ┌─────────────────┐         ┌─────────────────┐                         │   │
+│  │  │ Trino Coord.    │         │ Trino Worker    │                         │   │
+│  │  │ (1 replica)     │◄───────►│ (2 replicas)    │                         │   │
+│  │  │                 │         │                 │                         │   │
+│  │  │ • HTTP :8080    │         │ • HTTP :8080    │                         │   │
+│  │  │ • HTTPS :8443   │         │ • HTTPS :8443   │                         │   │
+│  │  │ • Auth: Password│         │ • Shared Secret │                         │   │
+│  │  └────────┬────────┘         └────────┬────────┘                         │   │
+│  │           │                           │                                  │   │
+│  │           └───────────┬───────────────┘                                  │   │
+│  │                       │                                                  │   │
+│  │                       ▼                                                  │   │
+│  │           ┌───────────────────────┐                                      │   │
+│  │           │  Hive Metastore       │                                      │   │
+│  │           │  (1 replica)          │                                      │   │
+│  │           │                       │                                      │   │
+│  │           │  • Thrift :9083       │                                      │   │
+│  │           │  • S3 Support         │                                      │   │
+│  │           └───────────┬───────────┘                                      │   │
+│  │                       │                                                  │   │
+│  │                       ▼                                                  │   │
+│  │           ┌───────────────────────┐                                      │   │
+│  │           │  PostgreSQL           │                                      │   │
+│  │           │  (StatefulSet)        │                                      │   │
+│  │           │                       │                                      │   │
+│  │           │  • Port :5432         │                                      │   │
+│  │           │  • Storage: emptyDir  │                                      │   │
+│  │           └───────────────────────┘                                      │   │
+│  │                                                                          │   │
+│  │  ┌────────────────────────────────────────────────┐                      │   │
+│  │  │           NodePort Services                    │                      │   │
+│  │  │                                                │                      │   │
+│  │  │  • Trino HTTPS: 30443 → 8443                   │                      │   │
+│  │  │  • Trino HTTP:  30080 → 8080                   │                      │   │
+│  │  └────────────────────────────────────────────────┘                      │   │
+│  └──────────────────────────────────────────────────────────────────────────┘   │
+│                                                                                 │
+│  ┌──────────────────────────────────────────────────────────────────────────┐   │
+│  │              MinIO Namespace (Object Storage - HA)                       │   │
+│  │                                                                          │   │
+│  │  ┌──────┐  ┌──────┐  ┌──────┐  ┌──────┐                                  │   │
+│  │  │MinIO │  │MinIO │  │MinIO │  │MinIO │                                  │   │
+│  │  │Pod-0 │  │Pod-1 │  │Pod-2 │  │Pod-3 │                                  │   │
+│  │  │      │  │      │  │      │  │      │                                  │   │
+│  │  │:9000 │  │:9000 │  │:9000 │  │:9000 │                                  │   │
+│  │  │:9001 │  │:9001 │  │:9001 │  │:9001 │                                  │   │
+│  │  └───┬──┘  └───┬──┘  └───┬──┘  └───┬──┘                                  │   │
+│  │      │         │         │         │                                     │   │
+│  │      └─────────┴─────────┴─────────┘                                     │   │
+│  │                    │                                                     │   │
+│  │            ┌───────▼────────┐                                            │   │
+│  │            │ PersistentVols │                                            │   │
+│  │            │ (4x 10Gi)      │                                            │   │
+│  │            └────────────────┘                                            │   │
+│  └──────────────────────────────────────────────────────────────────────────┘   │
+│                                                                                 │
+│  ┌──────────────────────────────────────────────────────────────────────────┐   │
+│  │                    Local Access                                          │   │
+│  │                                                                          │   │
+│  │  Port Forwarding:                                                        │   │
+│  │  • kubectl port-forward -n kafka svc/kafka-ui 8080:8080                  │   │
+│  │  • kubectl port-forward -n flowise svc/flowise 3000:3000                 │   │
+│  │  • kubectl port-forward -n trino svc/trino 8443:8443                     │   │
+│  │  • kubectl port-forward -n minio svc/minio-console 9001:9001             │   │
+│  │                                                                          │   │
+│  │  Minikube Service (NodePort):                                            │   │
+│  │  • minikube service kafka-ui -n kafka --url          (30081)             │   │
+│  │  • minikube service flowise -n flowise --url         (30300)             │   │
+│  │  • minikube service trino-nodeport -n trino --url    (30443/30080)       │   │
+│  │  • minikube service minio-console -n minio --url     (9001)              │   │
+│  └──────────────────────────────────────────────────────────────────────────┘   │
+│                                                                                 │
+│  ┌──────────────────────────────────────────────────────────────────────────┐   │
+│  │                    Data Flow                                             │   │
+│  │                                                                          │   │
+│  │  Producer → Kafka → Flink → Trino → MinIO                                │   │
+│  │              ▲       │       ▲       ▲                                   │   │
+│  │              │       │       │       │                                   │   │
+│  │              │       └───────┘       │                                   │   │
+│  │              │                       │                                   │   │
+│  │           Flowise ───────────────────┘                                   │   │
+│  │         (AI Workflows & Vector Processing)                               │   │
+│  └──────────────────────────────────────────────────────────────────────────┘   │
+│                                                                                 │
+└─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Components
 
-### 1. Trino Query Engine
+### 1. Apache Kafka (Streaming Platform)
+
+**Purpose**: Distributed event streaming platform for real-time data pipelines and streaming applications
+
+**Architecture**:
+- **KRaft Mode**: No Zookeeper dependency (Kafka 3.8.1+)
+- **Brokers**: 2 replicas with combined broker/controller roles
+- **HA Configuration**: High availability with replication factor 2
+
+**Features**:
+- **Auto-topic creation** enabled
+- **Replication**: Factor 2 for fault tolerance
+- **Retention**: 7 days (168 hours)
+- **NodePort Access**: Port 30092 for external clients
+
+**UI Management**:
+- **Kafka UI**: Web interface for cluster monitoring and management
+- **Port**: 8080 (NodePort 30081)
+
+**Resources**:
+- Request: 512Mi RAM, 250m CPU per broker
+- Limit: 1Gi RAM, 500m CPU per broker
+- Storage: 5Gi per broker (persistent volumes)
+
+**Access**:
+- Internal: `kafka-0.kafka-headless.kafka.svc.cluster.local:9092`
+- NodePort: `<minikube-ip>:30092`
+
+### 2. Apache Flink Operator
+
+**Purpose**: Kubernetes operator for deploying and managing Apache Flink clusters
+
+**Architecture**:
+- **Flink Operator**: Manages FlinkDeployment custom resources
+- **Session Mode**: Long-running cluster for multiple jobs
+- **Native Kubernetes Integration**: Dynamic resource allocation
+
+**Capabilities**:
+- **Job Management**: Deploy, update, and monitor Flink jobs
+- **HA Support**: Kubernetes-based high availability
+- **Checkpointing**: Automatic state management
+- **Savepoints**: Manual state snapshots for upgrades
+
+**Typical Deployment**:
+- **JobManager**: 1 replica, 1Gi memory, 1 CPU
+- **TaskManager**: 2 replicas, 1Gi memory, 1 CPU each
+- **Task Slots**: 2 per TaskManager
+
+**Features**:
+- Docker-in-Docker support for Python SDK jobs
+- Beam integration for unified batch/streaming
+- State backends: filesystem, RocksDB
+- Metrics and monitoring integration
+
+### 3. Flowise (Low-Code AI Orchestration)
+
+**Purpose**: Visual builder for AI workflows and LangChain applications
+
+**Architecture**:
+- **Flowise Server**: Node.js application with web UI
+- **PostgreSQL**: Persistent storage for workflows and configs
+- **Persistent Storage**: 5Gi for application data
+
+**Features**:
+- **Visual Flow Builder**: Drag-and-drop interface for AI chains
+- **LLM Integration**: OpenAI, Anthropic, local models
+- **Vector Stores**: Support for embeddings and retrieval
+- **API Deployment**: Auto-generate APIs from flows
+
+**Credentials**:
+- Username: `admin`
+- Password: `admin123`
+
+**Database**:
+- PostgreSQL 15
+- Database: `flowise`
+- Storage: 10Gi persistent volume
+
+**Resources**:
+- Flowise: 512Mi-2Gi RAM, 500m-1000m CPU
+- PostgreSQL: 256Mi-512Mi RAM, 250m-500m CPU
+
+**Access**:
+- Web UI: Port 3000 (NodePort 30300)
+- Healthz: `/healthz` endpoint
+
+### 4. Trino Query Engine
 
 **Purpose**: Distributed SQL query engine for data lakehouse workloads
 
@@ -118,7 +273,7 @@ The AIchemy platform provides a complete data lakehouse solution with support fo
 - NodePort 30443 (HTTPS) - requires authentication
 - NodePort 30080 (HTTP) - internal use
 
-### 2. MinIO Object Storage (HA)
+### 5. MinIO Object Storage (HA)
 
 **Purpose**: S3-compatible object storage for data lake files
 
@@ -139,7 +294,7 @@ The AIchemy platform provides a complete data lakehouse solution with support fo
 - Access Key: `admin`
 - Secret Key: `password123`
 
-### 3. Hive Metastore
+### 6. Hive Metastore
 
 **Purpose**: Centralized metadata catalog for all table formats
 
@@ -152,7 +307,7 @@ The AIchemy platform provides a complete data lakehouse solution with support fo
 - PostgreSQL JDBC driver (auto-downloaded at startup)
 - Hadoop AWS + AWS SDK bundles (auto-downloaded at startup)
 
-### 4. PostgreSQL Database
+### 7. PostgreSQL Database
 
 **Purpose**: Persistent metadata storage for Hive Metastore
 
@@ -264,7 +419,64 @@ kubectl config get-contexts
 kubectl config use-context minikube
 ```
 
-### Step 3: Deploy MinIO (HA)
+### Step 3: Deploy Kafka (Optional - for streaming)
+
+```bash
+# Apply Kafka HA configuration
+kubectl apply -f mk-kafka-ha.yml
+
+# Wait for Kafka brokers to be ready
+kubectl wait --for=condition=ready pod -l app=kafka -n kafka --timeout=300s
+
+# Verify deployment
+kubectl get pods -n kafka
+kubectl get pvc -n kafka
+
+# Access Kafka UI
+kubectl port-forward -n kafka svc/kafka-ui 8080:8080
+# Open http://localhost:8080
+```
+
+### Step 4: Deploy Flink Operator (Optional - for stream processing)
+
+```bash
+# Install Flink Kubernetes Operator using Helm
+helm repo add flink-operator-repo https://downloads.apache.org/flink/flink-kubernetes-operator-1.8.0/
+helm repo update
+
+# Install operator
+helm install flink-kubernetes-operator flink-operator-repo/flink-kubernetes-operator \
+  --namespace flink --create-namespace
+
+# Verify operator is running
+kubectl get pods -n flink
+
+# Deploy a Basic Example
+kubectl create -f https://raw.githubusercontent.com/apache/flink-kubernetes-operator/release-1.13/examples/basic.yaml
+
+# Deploy a Flink session cluster (see flink deployment examples in python/beam-flink-test/)
+```
+
+### Step 5: Deploy Flowise (Optional - for AI workflows)
+
+```bash
+# Apply Flowise configuration
+kubectl apply -f mk-flowise.yml
+
+# Wait for pods to be ready
+kubectl wait --for=condition=ready pod -l app=flowise -n flowise --timeout=300s
+
+# Verify deployment
+kubectl get pods -n flowise
+kubectl get pvc -n flowise
+
+# Access Flowise UI
+kubectl port-forward -n flowise svc/flowise 3000:3000
+# Open http://localhost:3000
+# Login: admin / admin123
+```
+
+### Step 6: Deploy MinIO (HA)
 
 ```bash
 # Apply MinIO HA configuration
@@ -278,7 +490,7 @@ kubectl get pods -n minio
 kubectl get pvc -n minio
 ```
 
-### Step 4: Deploy Trino with HTTPS & Authentication
+### Step 7: Deploy Trino with HTTPS & Authentication
 
 ```bash
 # Apply Trino configuration
@@ -292,9 +504,22 @@ kubectl get pods -n trino
 kubectl get svc -n trino
 ```
 
-### Step 5: Access Services
+### Step 8: Access Services
 
 #### Option A: Port Forwarding (Recommended)
+
+**Kafka UI:**
+```bash
+kubectl port-forward -n kafka svc/kafka-ui 8080:8080
+```
+Access at: http://localhost:8080
+
+**Flowise:**
+```bash
+kubectl port-forward -n flowise svc/flowise 3000:3000
+```
+Access at: http://localhost:3000
+- Login: `admin` / `admin123`
 
 **Trino HTTPS:**
 ```bash
@@ -315,6 +540,16 @@ kubectl port-forward -n minio svc/minio-console 9001:9001
 Access at: http://localhost:9001
 
 #### Option B: Minikube Service (NodePort)
+
+**Kafka UI:**
+```bash
+minikube service kafka-ui -n kafka --url
+```
+
+**Flowise:**
+```bash
+minikube service flowise -n flowise --url
+```
 
 **Trino:**
 ```bash
@@ -403,6 +638,110 @@ Access via browser at http://localhost:9001 (with port-forward active)
 - Password: `password123`
 
 ## Example Queries
+
+### Kafka Producer/Consumer Examples
+
+#### Python Producer
+```python
+from kafka import KafkaProducer
+import json
+
+# Get Minikube IP
+# minikube_ip = $(minikube ip)
+
+producer = KafkaProducer(
+    bootstrap_servers=['<minikube-ip>:30092'],
+    value_serializer=lambda v: json.dumps(v).encode('utf-8')
+)
+
+# Send messages
+for i in range(10):
+    message = {'id': i, 'value': f'message-{i}'}
+    producer.send('test-topic', message)
+    print(f"Sent: {message}")
+
+producer.flush()
+producer.close()
+```
+
+#### Python Consumer
+```python
+from kafka import KafkaConsumer
+import json
+
+consumer = KafkaConsumer(
+    'test-topic',
+    bootstrap_servers=['<minikube-ip>:30092'],
+    value_deserializer=lambda m: json.loads(m.decode('utf-8')),
+    auto_offset_reset='earliest',
+    group_id='my-group'
+)
+
+print("Waiting for messages...")
+for message in consumer:
+    print(f"Received: {message.value}")
+```
+
+#### Using kubectl exec (Inside cluster)
+```bash
+# Create topic
+kubectl exec -it kafka-0 -n kafka -- /opt/kafka/bin/kafka-topics.sh \
+  --create --topic test-topic --partitions 2 --replication-factor 2 \
+  --bootstrap-server kafka-0.kafka-headless.kafka.svc.cluster.local:9092
+
+# List topics
+kubectl exec -it kafka-0 -n kafka -- /opt/kafka/bin/kafka-topics.sh \
+  --list --bootstrap-server kafka-0.kafka-headless.kafka.svc.cluster.local:9092
+
+# Produce messages
+kubectl exec -it kafka-0 -n kafka -- /opt/kafka/bin/kafka-console-producer.sh \
+  --topic test-topic --bootstrap-server kafka-0.kafka-headless.kafka.svc.cluster.local:9092
+
+# Consume messages
+kubectl exec -it kafka-0 -n kafka -- /opt/kafka/bin/kafka-console-consumer.sh \
+  --topic test-topic --from-beginning \
+  --bootstrap-server kafka-0.kafka-headless.kafka.svc.cluster.local:9092
+```
+
+### Flowise AI Workflow Examples
+
+#### Access Flowise UI
+1. Port-forward: `kubectl port-forward -n flowise svc/flowise 3000:3000`
+2. Open browser: http://localhost:3000
+3. Login with `admin` / `admin123`
+
+#### Create a Simple LLM Chain
+1. Click **"Add New"** chatflow
+2. Drag **"ChatOpenAI"** from nodes panel
+3. Add your OpenAI API key
+4. Drag **"ConversationChain"** 
+5. Connect ChatOpenAI → ConversationChain
+6. Click **"Save"** then **"Start"**
+7. Test in the chat panel
+
+#### Using Flowise API
+```python
+import requests
+
+# Get the API endpoint from Flowise UI after deploying a flow
+FLOWISE_URL = "http://localhost:3000/api/v1/prediction/<flow-id>"
+
+response = requests.post(
+    FLOWISE_URL,
+    json={
+        "question": "What is machine learning?",
+    }
+)
+
+print(response.json())
+```
+
+#### Vector Store Integration
+1. Add **"Pinecone"** or **"Chroma"** node
+2. Add **"OpenAI Embeddings"** node
+3. Add **"Document Loader"** (PDF, CSV, etc.)
+4. Connect: Document → Embeddings → Vector Store
+5. Use with **"Retrieval QA Chain"** for RAG
 
 ### Show Available Catalogs
 ```sql
@@ -612,6 +951,27 @@ kubectl create secret tls trino-tls-secret \
 
 ### View Logs
 
+**Kafka Brokers:**
+```bash
+kubectl logs -n kafka kafka-0 -f
+kubectl logs -n kafka kafka-1 -f
+```
+
+**Kafka UI:**
+```bash
+kubectl logs -n kafka -l app=kafka-ui -f
+```
+
+**Flowise:**
+```bash
+kubectl logs -n flowise -l app=flowise -f
+```
+
+**Flowise PostgreSQL:**
+```bash
+kubectl logs -n flowise -l app=postgres -f
+```
+
 **Trino Coordinator:**
 ```bash
 kubectl logs -n trino -l component=coordinator -f
@@ -643,6 +1003,15 @@ kubectl logs -n minio -l app=minio -f
 # All namespaces
 kubectl get pods -A
 
+# Kafka namespace
+kubectl get pods -n kafka
+
+# Flowise namespace
+kubectl get pods -n flowise
+
+# Flink namespace (if deployed)
+kubectl get pods -n flink
+
 # Trino namespace
 kubectl get pods -n trino
 
@@ -661,6 +1030,79 @@ kubectl get events -n trino --sort-by='.lastTimestamp'
 ```
 
 ## Troubleshooting
+
+### Kafka Brokers Not Starting
+
+**Check broker logs:**
+```bash
+kubectl logs kafka-0 -n kafka
+kubectl logs kafka-1 -n kafka
+```
+
+**Check init container:**
+```bash
+kubectl logs kafka-0 -n kafka -c kafka-init
+```
+
+**Common issues:**
+- Storage formatting failed (check PVC)
+- Network communication between brokers
+- Cluster ID mismatch
+- Insufficient resources
+
+**Reset Kafka cluster:**
+```bash
+kubectl delete statefulset kafka -n kafka
+kubectl delete pvc -l app=kafka -n kafka
+kubectl apply -f mk-kafka-ha.yml
+```
+
+### Flowise Not Connecting to Database
+
+**Check PostgreSQL status:**
+```bash
+kubectl exec -it -n flowise deployment/postgres -- psql -U flowise -d flowise -c "\dt"
+```
+
+**Verify connection:**
+```bash
+kubectl exec -it -n flowise deployment/flowise -- nc -zv postgres 5432
+```
+
+**Common issues:**
+- PostgreSQL not ready (check readiness probe)
+- Wrong credentials in ConfigMap
+- PVC not bound
+
+**Reset Flowise:**
+```bash
+kubectl delete deployment flowise postgres -n flowise
+kubectl delete pvc postgres-pvc flowise-pvc -n flowise
+kubectl apply -f mk-flowise.yml
+```
+
+### Flink Operator Issues
+
+**Check operator logs:**
+```bash
+kubectl logs -n flink deployment/flink-kubernetes-operator
+```
+
+**Verify CRD installation:**
+```bash
+kubectl get crd | grep flink
+```
+
+**Common issues:**
+- FlinkDeployment CRD not installed
+- Insufficient RBAC permissions
+- Invalid FlinkDeployment spec
+
+**Reinstall operator:**
+```bash
+helm uninstall flink-kubernetes-operator -n flink
+helm install flink-kubernetes-operator flink-operator-repo/flink-kubernetes-operator -n flink
+```
 
 ### Trino Pods Not Starting
 
@@ -777,6 +1219,18 @@ resources:
 ### Delete Deployments (Keep Minikube)
 
 ```bash
+# Delete Kafka
+kubectl delete -f mk-kafka-ha.yml
+kubectl delete namespace kafka
+
+# Delete Flowise
+kubectl delete -f mk-flowise.yml
+kubectl delete namespace flowise
+
+# Delete Flink Operator
+helm uninstall flink-kubernetes-operator -n flink
+kubectl delete namespace flink
+
 # Delete Trino components
 kubectl delete -f mk-trino-https-auth.yml
 
@@ -935,15 +1389,53 @@ if __name__ == '__main__':
 
 ## Additional Resources
 
+### Quick Reference - Service Access
+
+| Service | Port-Forward Command | URL | Credentials |
+|---------|---------------------|-----|-------------|
+| Trino HTTPS | `kubectl port-forward -n trino svc/trino 8443:8443` | https://localhost:8443 | admin / admin123 |
+| Trino HTTP | `kubectl port-forward -n trino svc/trino 8080:8080` | http://localhost:8080 | - |
+| MinIO Console | `kubectl port-forward -n minio svc/minio-console 9001:9001` | http://localhost:9001 | admin / password123 |
+| Kafka UI | `kubectl port-forward -n kafka svc/kafka-ui 8080:8080` | http://localhost:8080 | - |
+| Flowise | `kubectl port-forward -n flowise svc/flowise 3000:3000` | http://localhost:3000 | admin / admin123 |
+
+### Quick Reference - Internal Service Endpoints
+
+| Service | Internal Endpoint | Port | Use Case |
+|---------|------------------|------|----------|
+| Kafka Bootstrap | `kafka-0.kafka-headless.kafka.svc.cluster.local` | 9092 | Producer/Consumer |
+| Kafka Broker 1 | `kafka-1.kafka-headless.kafka.svc.cluster.local` | 9092 | Producer/Consumer |
+| Flowise API | `flowise.flowise.svc.cluster.local` | 3000 | Internal API calls |
+| Flowise DB | `postgres.flowise.svc.cluster.local` | 5432 | Database connection |
+| Trino | `trino.trino.svc.cluster.local` | 8080 | Internal queries |
+| MinIO API | `minio.minio.svc.cluster.local` | 9000 | S3 operations |
+| Hive Metastore | `hive-metastore.trino.svc.cluster.local` | 9083 | Metadata queries |
+
+### Configuration Files Reference
+
+| Component | Config File | Description |
+|-----------|-------------|-------------|
+| Kafka | [mk-kafka-ha.yml](mk-kafka-ha.yml) | 2-node KRaft cluster with UI |
+| Flowise | [mk-flowise.yml](mk-flowise.yml) | AI workflow builder with PostgreSQL |
+| Trino | [mk-trino-https-auth.yml](mk-trino-https-auth.yml) | Query engine with HTTPS auth |
+| MinIO | [mk-minio-ha-r2.yml](mk-minio-ha-r2.yml) | 4-node distributed storage |
+
 ### Documentation
 - **Trino**: https://trino.io/docs/current/
 - **MinIO**: https://min.io/docs/minio/kubernetes/upstream/
 - **Apache Iceberg**: https://iceberg.apache.org/
+- **Apache Kafka**: https://kafka.apache.org/documentation/
+- **Apache Flink**: https://nightlies.apache.org/flink/flink-docs-stable/
+- **Flink Kubernetes Operator**: https://nightlies.apache.org/flink/flink-kubernetes-operator-docs-stable/
+- **Flowise**: https://docs.flowiseai.com/
 - **Minikube**: https://minikube.sigs.k8s.io/docs/
 
 ### Community
 - Trino Slack: https://trino.io/slack.html
 - MinIO Slack: https://slack.min.io/
+- Apache Kafka Users: https://kafka.apache.org/contact
+- Flink User Mailing List: https://flink.apache.org/community.html
+- Flowise Discord: https://discord.gg/jbaHfsRVBW
 
 ### Notes Files
 - See [mk-notes.md](mk-notes.md) for detailed operational commands and examples

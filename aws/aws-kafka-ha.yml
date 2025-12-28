@@ -1,0 +1,356 @@
+---
+# Namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kafka
+---
+# Service headless per discovery dei broker
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-headless
+  namespace: kafka
+spec:
+  clusterIP: None
+  ports:
+  - port: 9092
+    name: broker
+  - port: 9093
+    name: controller
+  selector:
+    app: kafka
+---
+# Service per accesso (LoadBalancer) - usa 9092 (interno/esterno)
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka
+  namespace: kafka
+  annotations:
+    # Per LoadBalancer interno (private subnet)
+    service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+    service.beta.kubernetes.io/aws-load-balancer-internal: "true"
+    # Per LoadBalancer esterno (public subnet), commentare la riga sopra
+    # service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+spec:
+  type: LoadBalancer
+  ports:
+  - port: 9092
+    targetPort: 9092
+    name: kafka
+  selector:
+    app: kafka
+---
+# StatefulSet Kafka in modalità KRaft (senza Zookeeper)
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: kafka
+  namespace: kafka
+spec:
+  serviceName: kafka-headless
+  replicas: 2
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app: kafka
+  template:
+    metadata:
+      labels:
+        app: kafka
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - kafka
+              topologyKey: kubernetes.io/hostname
+        # Distribuzione su zone AWS diverse per alta disponibilità
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 50
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - kafka
+              topologyKey: topology.kubernetes.io/zone
+      volumes:
+      - name: external-hosts
+        configMap:
+          name: kafka-external-hosts
+      initContainers:
+      - name: kafka-init
+        image: apache/kafka:3.8.1
+        securityContext:
+          runAsUser: 0
+        command:
+        - bash
+        - -c
+        - |
+          set -euo pipefail
+          NODE_ID=${HOSTNAME##*-}
+          EXTERNAL_HOST="$(cat /etc/kafka/external-hosts/${HOSTNAME} 2>/dev/null || true)"
+
+          mkdir -p /var/lib/kafka/data
+          mkdir -p /var/lib/kafka/data/logs
+
+          # Pulisci eventuali file parziali da tentativi precedenti nella sottocartella logs
+          rm -f /var/lib/kafka/data/logs/bootstrap.checkpoint /var/lib/kafka/data/logs/bootstrap.checkpoint.tmp
+
+          if [ ! -f /var/lib/kafka/data/logs/meta.properties ]; then
+            # Cleanup aggressivo solo della sottocartella logs per evitare problemi con lost+found
+            find /var/lib/kafka/data/logs -mindepth 1 -maxdepth 1 -exec rm -rf {} + || true
+            mkdir -p /var/lib/kafka/data/logs
+            chmod 755 /var/lib/kafka/data/logs
+
+            echo "Formatting storage for node $NODE_ID with cluster ID $CLUSTER_ID"
+
+            cat > /tmp/server.properties << EOF
+          node.id=$NODE_ID
+          process.roles=broker,controller
+          controller.quorum.voters=0@kafka-0.kafka-headless.kafka.svc.cluster.local:9093,1@kafka-1.kafka-headless.kafka.svc.cluster.local:9093
+          listeners=PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,EXTERNAL://0.0.0.0:9094
+          advertised.listeners=PLAINTEXT://${HOSTNAME}.kafka-headless.kafka.svc.cluster.local:9092${EXTERNAL_HOST:+,EXTERNAL://$EXTERNAL_HOST:9094}
+          listener.security.protocol.map=PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT
+          controller.listener.names=CONTROLLER
+          inter.broker.listener.name=PLAINTEXT
+          log.dirs=/var/lib/kafka/data/logs
+          EOF
+
+            /opt/kafka/bin/kafka-storage.sh format -t $CLUSTER_ID -c /tmp/server.properties
+            echo "Storage formatted successfully"
+          else
+            echo "Storage already formatted for node $NODE_ID"
+          fi
+        env:
+        - name: CLUSTER_ID
+          value: "MkU3OEVBNTcwNTJENDM2Qk"
+        volumeMounts:
+        - name: datadir
+          mountPath: /var/lib/kafka/data
+        - name: external-hosts
+          mountPath: /etc/kafka/external-hosts
+      containers:
+      - name: kafka
+        image: apache/kafka:3.8.1
+        securityContext:
+          runAsUser: 0
+        command:
+        - bash
+        - -c
+        - |
+          set -euo pipefail
+          NODE_ID=${HOSTNAME##*-}
+          EXTERNAL_HOST="$(cat /etc/kafka/external-hosts/${HOSTNAME} 2>/dev/null || true)"
+
+          mkdir -p /var/lib/kafka/data
+          mkdir -p /var/lib/kafka/data/logs
+
+          cat > /tmp/server.properties << EOF
+          node.id=$NODE_ID
+          process.roles=broker,controller
+          controller.quorum.voters=0@kafka-0.kafka-headless.kafka.svc.cluster.local:9093,1@kafka-1.kafka-headless.kafka.svc.cluster.local:9093
+          listeners=PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,EXTERNAL://0.0.0.0:9094
+          advertised.listeners=PLAINTEXT://${HOSTNAME}.kafka-headless.kafka.svc.cluster.local:9092${EXTERNAL_HOST:+,EXTERNAL://$EXTERNAL_HOST:9094}
+          listener.security.protocol.map=PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT
+          controller.listener.names=CONTROLLER
+          inter.broker.listener.name=PLAINTEXT
+          log.dirs=/var/lib/kafka/data/logs
+          offsets.topic.replication.factor=2
+          transaction.state.log.replication.factor=2
+          transaction.state.log.min.isr=1
+          default.replication.factor=2
+          min.insync.replicas=1
+          auto.create.topics.enable=true
+          log.retention.hours=168
+          # AWS EKS optimization
+          socket.send.buffer.bytes=102400
+          socket.receive.buffer.bytes=102400
+          socket.request.max.bytes=104857600
+          num.io.threads=8
+          num.network.threads=3
+          EOF
+
+          exec /opt/kafka/bin/kafka-server-start.sh /tmp/server.properties
+        ports:
+        - containerPort: 9092
+          name: broker
+        - containerPort: 9093
+          name: controller
+        - containerPort: 9094
+          name: external
+        env:
+        - name: CLUSTER_ID
+          value: "MkU3OEVBNTcwNTJENDM2Qk"
+        - name: KAFKA_HEAP_OPTS
+          value: "-Xmx512m -Xms512m"
+        - name: KAFKA_JVM_PERFORMANCE_OPTS
+          value: "-XX:+UseG1GC -XX:MaxGCPauseMillis=20 -XX:InitiatingHeapOccupancyPercent=35"
+        volumeMounts:
+        - name: datadir
+          mountPath: /var/lib/kafka/data
+        - name: external-hosts
+          mountPath: /etc/kafka/external-hosts
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+        livenessProbe:
+          tcpSocket:
+            port: 9092
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+        readinessProbe:
+          tcpSocket:
+            port: 9092
+          initialDelaySeconds: 20
+          periodSeconds: 10
+          timeoutSeconds: 5
+  volumeClaimTemplates:
+  - metadata:
+      name: datadir
+    spec:
+      accessModes:
+      - ReadWriteOnce
+      # AWS EKS storage classes:
+      # - gp2: General Purpose SSD (default)
+      # - gp3: General Purpose SSD (newer, better performance)
+      # - io1/io2: Provisioned IOPS SSD (for high performance)
+      storageClassName: "gp3"
+      resources:
+        requests:
+          storage: 20Gi
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kafka-external-hosts
+  namespace: kafka
+# Inserire gli host esterni per ogni broker dopo aver ottenuto gli indirizzi dei LoadBalancer
+# Esempio:
+# kafka-0: <kafka-0-external-lb-address>.elb.us-east-1.amazonaws.com
+# kafka-1: <kafka-1-external-lb-address>.elb.us-east-1.amazonaws.com
+data:
+  kafka-0: ""
+  kafka-1: ""
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kafka-ui
+  namespace: kafka
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kafka-ui
+  template:
+    metadata:
+      labels:
+        app: kafka-ui
+    spec:
+      containers:
+      - name: kafka-ui
+        image: provectuslabs/kafka-ui:latest
+        ports:
+        - containerPort: 8080
+        env:
+        - name: KAFKA_CLUSTERS_0_NAME
+          value: "aws-kafka"
+        - name: KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS
+          value: "kafka-0.kafka-headless.kafka.svc.cluster.local:9092,kafka-1.kafka-headless.kafka.svc.cluster.local:9092"
+        - name: DYNAMIC_CONFIG_ENABLED
+          value: "true"
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "200m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-ui
+  namespace: kafka
+  annotations:
+    # Per LoadBalancer interno (private subnet)
+    service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+    service.beta.kubernetes.io/aws-load-balancer-internal: "true"
+    # Per LoadBalancer esterno (public subnet), sostituire con:
+    # service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+    # service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
+spec:
+  type: LoadBalancer
+  ports:
+  - port: 8080
+    targetPort: 8080
+  selector:
+    app: kafka-ui
+---
+# Service esterno per kafka-0 (per accesso da client esterni)
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-0-external
+  namespace: kafka
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+    # Per NLB interno
+    service.beta.kubernetes.io/aws-load-balancer-internal: "true"
+    # Per NLB esterno, sostituire con:
+    # service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
+    # Preserva IP del client
+    service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled: "true"
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+  ports:
+  - name: external
+    port: 9094
+    targetPort: 9094
+    protocol: TCP
+  selector:
+    app: kafka
+    statefulset.kubernetes.io/pod-name: kafka-0
+---
+# Service esterno per kafka-1 (per accesso da client esterni)
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-1-external
+  namespace: kafka
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+    # Per NLB interno
+    service.beta.kubernetes.io/aws-load-balancer-internal: "true"
+    # Per NLB esterno, sostituire con:
+    # service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
+    # Preserva IP del client
+    service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled: "true"
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+  ports:
+  - name: external
+    port: 9094
+    targetPort: 9094
+    protocol: TCP
+  selector:
+    app: kafka
+    statefulset.kubernetes.io/pod-name: kafka-1

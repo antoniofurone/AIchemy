@@ -9,96 +9,242 @@ The AIchemy platform provides a complete data lakehouse solution with support fo
 ### Architecture Diagram
 
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                        GCP Cloud - VPC Network                          │
-│                                                                         │
-│  ┌──────────────────────────────────────────────────────────────────┐   │
-│  │              GKE Cluster (Private Nodes)                         │   │
-│  │            europe-west1-b, europe-west1-c                        │   │
-│  │                                                                  │   │
-│  │  ┌────────────────────────────────────────────────────────────┐  │   │
-│  │  │              Trino Namespace                               │  │   │
-│  │  │                                                            │  │   │
-│  │  │  ┌─────────────────┐         ┌─────────────────┐           │  │   │
-│  │  │  │ Trino Coord.    │         │ Trino Worker    │           │  │   │
-│  │  │  │ (1 replica)     │◄───────►│ (2 replicas)    │           │  │   │
-│  │  │  │                 │         │                 │           │  │   │
-│  │  │  │ • HTTP :8080    │         │ • HTTP :8080    │           │  │   │
-│  │  │  │ • HTTPS :8443   │         │ • HTTPS :8443   │           │  │   │
-│  │  │  │ • Auth: Password│         │ • Shared Secret │           │  │   │
-│  │  │  └────────┬────────┘         └────────┬────────┘           │  │   │
-│  │  │           │                           │                    │  │   │
-│  │  │           └───────────┬───────────────┘                    │  │   │
-│  │  │                       │                                    │  │   │
-│  │  │                       ▼                                    │  │   │
-│  │  │           ┌───────────────────────┐                        │  │   │
-│  │  │           │  Hive Metastore       │                        │  │   │
-│  │  │           │  (1 replica)          │                        │  │   │
-│  │  │           │                       │                        │  │   │
-│  │  │           │  • Thrift :9083       │                        │  │   │
-│  │  │           │  • S3 Support         │                        │  │   │
-│  │  │           └───────────┬───────────┘                        │  │   │
-│  │  │                       │                                    │  │   │
-│  │  │                       ▼                                    │  │   │
-│  │  │           ┌───────────────────────┐                        │  │   │
-│  │  │           │  PostgreSQL           │                        │  │   │
-│  │  │           │  (StatefulSet)        │                        │  │   │
-│  │  │           │                       │                        │  │   │
-│  │  │           │  • Port :5432         │                        │  │   │
-│  │  │           │  • Storage: PD-SSD    │                        │  │   │
-│  │  │           └───────────────────────┘                        │  │   │
-│  │  └────────────────────────────────────────────────────────────┘  │   │
-│  │                                                                  │   │
-│  │  ┌────────────────────────────────────────────────────────────┐  │   │
-│  │  │              MinIO Namespace (HA)                          │  │   │
-│  │  │                                                            │  │   │
-│  │  │  ┌──────┐  ┌──────┐  ┌──────┐  ┌──────┐                    │  │   │
-│  │  │  │MinIO │  │MinIO │  │MinIO │  │MinIO │                    │  │   │
-│  │  │  │Pod-0 │  │Pod-1 │  │Pod-2 │  │Pod-3 │                    │  │   │
-│  │  │  │      │  │      │  │      │  │      │                    │  │   │
-│  │  │  │:9000 │  │:9000 │  │:9000 │  │:9000 │                    │  │   │
-│  │  │  │:9001 │  │:9001 │  │:9001 │  │:9001 │                    │  │   │
-│  │  │  └───┬──┘  └───┬──┘  └───┬──┘  └───┬──┘                    │  │   │
-│  │  │      │         │         │         │                       │  │   │
-│  │  │      └─────────┴─────────┴─────────┘                       │  │   │
-│  │  │                    │                                       │  │   │
-│  │  │            ┌───────▼────────┐                              │  │   │
-│  │  │            │ Persistent Disk│                              │  │   │
-│  │  │            │ (4x 10Gi SSD)  │                              │  │   │
-│  │  │            └────────────────┘                              │  │   │
-│  │  └────────────────────────────────────────────────────────────┘  │   │
-│  └──────────────────────────────────────────────────────────────────┘   │
-│                                                                         │
-│  ┌──────────────────────────────────────────────────────────────────┐   │
-│  │                    External Access                               │   │
-│  │                                                                  │   │
-│  │  ┌────────────────────┐         ┌────────────────────┐           │   │
-│  │  │ GCP External LB    │         │ GCP External LB    │           │   │
-│  │  │ (Trino External)   │         │ (MinIO Console)    │           │   │
-│  │  │                    │         │                    │           │   │
-│  │  │ • HTTPS :8443      │         │ • API :9000        │           │   │
-│  │  │ • HTTP  :8080      │         │ • Console :9001    │           │   │
-│  │  └────────────────────┘         └────────────────────┘           │   │
-│  └──────────────────────────────────────────────────────────────────┘   │
-│                                                                         │
-│  ┌──────────────────────────────────────────────────────────────────┐   │
-│  │                    Public Subnet                                 │   │
-│  │                                                                  │   │
-│  │  ┌────────────────────┐                                          │   │
-│  │  │ Bastion Host       │                                          │   │
-│  │  │ (e2-micro)         │                                          │   │
-│  │  │                    │                                          │   │
-│  │  │ • SSH via IAP      │                                          │   │
-│  │  │ • kubectl access   │                                          │   │
-│  │  └────────────────────┘                                          │   │
-│  └──────────────────────────────────────────────────────────────────┘   │
-│                                                                         │
-└─────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                          GCP Cloud - VPC Network                                │
+│                       europe-west1-b, europe-west1-c                            │
+│                                                                                 │
+│  ┌──────────────────────────────────────────────────────────────────────────┐   │
+│  │              Kafka Namespace (Optional - Streaming)                      │   │
+│  │                                                                          │   │
+│  │  ┌────────────────┐         ┌────────────────┐      ┌──────────────┐     │   │
+│  │  │ Kafka Broker-0 │◄───────►│ Kafka Broker-1 │      │  Kafka UI    │     │   │
+│  │  │  (KRaft Mode)  │         │  (KRaft Mode)  │      │              │     │   │
+│  │  │                │         │                │      │  • Port:8080 │     │   │
+│  │  │ • Broker :9092 │         │ • Broker :9092 │      │  • LB: Ext.  │     │   │
+│  │  │ • Control:9093 │         │ • Control:9093 │      └──────────────┘     │   │
+│  │  │ • External:9094│         │ • External:9094│                           │   │
+│  │  │ • Storage: 5Gi │         │ • Storage: 5Gi │                           │   │
+│  │  └────────────────┘         └────────────────┘                           │   │
+│  │                                                                          │   │
+│  │  External LB: kafka-0-external, kafka-1-external (per-broker access)     │   │
+│  └──────────────────────────────────────────────────────────────────────────┘   │
+│                                                                                 │
+│  ┌──────────────────────────────────────────────────────────────────────────┐   │
+│  │              Flink Namespace (Optional - Stream Processing)              │   │
+│  │                                                                          │   │
+│  │  ┌───────────────────────────────────────────────┐                       │   │
+│  │  │  Flink Kubernetes Operator                    │                       │   │
+│  │  │                                               │                       │   │
+│  │  │  • Manages FlinkDeployment CRDs               │                       │   │
+│  │  │  • Dynamic JobManager/TaskManager scaling     │                       │   │
+│  │  │  • Checkpoint & Savepoint management          │                       │   │
+│  │  └───────────────────────────────────────────────┘                       │   │
+│  │              │                                                           │   │
+│  │              ▼  (Deploys on-demand)                                      │   │
+│  │  ┌──────────────────┐         ┌──────────────────┐                       │   │
+│  │  │  JobManager      │◄───────►│  TaskManager     │                       │   │
+│  │  │  (Session/Job)   │         │  (2+ replicas)   │                       │   │
+│  │  │                  │         │                  │                       │   │
+│  │  │  • RPC :6123     │         │  • Slots: 2      │                       │   │
+│  │  │  • Web :8081     │         │  • Memory: 1Gi   │                       │   │
+│  │  └──────────────────┘         └──────────────────┘                       │   │
+│  └──────────────────────────────────────────────────────────────────────────┘   │
+│                                                                                 │
+│  ┌──────────────────────────────────────────────────────────────────────────┐   │
+│  │              Flowise Namespace (Optional - AI Workflows)                 │   │
+│  │                                                                          │   │
+│  │  ┌──────────────────┐         ┌──────────────────┐                       │   │
+│  │  │  Flowise Server  │◄───────►│  PostgreSQL 15   │                       │   │
+│  │  │                  │         │                  │                       │   │
+│  │  │  • Port: 3000    │         │  • Port: 5432    │                       │   │
+│  │  │  • LB: External  │         │  • DB: flowise   │                       │   │
+│  │  │  • Auth: admin   │         │  • Storage: 20Gi │                       │   │
+│  │  │  • Storage: 10Gi │         └──────────────────┘                       │   │
+│  │  │                  │                                                    │   │
+│  │  │  • LLM Chains    │                                                    │   │
+│  │  │  • Vector DBs    │                                                    │   │
+│  │  │  • Workflows API │                                                    │   │
+│  │  └──────────────────┘                                                    │   │
+│  └──────────────────────────────────────────────────────────────────────────┘   │
+│                                                                                 │
+│  ┌──────────────────────────────────────────────────────────────────────────┐   │
+│  │              Trino Namespace (Query Engine)                              │   │
+│  │                                                                          │   │
+│  │  ┌─────────────────┐         ┌─────────────────┐                         │   │
+│  │  │ Trino Coord.    │         │ Trino Worker    │                         │   │
+│  │  │ (1 replica)     │◄───────►│ (2 replicas)    │                         │   │
+│  │  │                 │         │                 │                         │   │
+│  │  │ • HTTP :8080    │         │ • HTTP :8080    │                         │   │
+│  │  │ • HTTPS :8443   │         │ • HTTPS :8443   │                         │   │
+│  │  │ • Auth: Password│         │ • Shared Secret │                         │   │
+│  │  └────────┬────────┘         └────────┬────────┘                         │   │
+│  │           │                           │                                  │   │
+│  │           └───────────┬───────────────┘                                  │   │
+│  │                       │                                                  │   │
+│  │                       ▼                                                  │   │
+│  │           ┌───────────────────────┐                                      │   │
+│  │           │  Hive Metastore       │                                      │   │
+│  │           │  (1 replica)          │                                      │   │
+│  │           │                       │                                      │   │
+│  │           │  • Thrift :9083       │                                      │   │
+│  │           │  • S3 Support         │                                      │   │
+│  │           └───────────┬───────────┘                                      │   │
+│  │                       │                                                  │   │
+│  │                       ▼                                                  │   │
+│  │           ┌───────────────────────┐                                      │   │
+│  │           │  PostgreSQL           │                                      │   │
+│  │           │  (StatefulSet)        │                                      │   │
+│  │           │                       │                                      │   │
+│  │           │  • Port :5432         │                                      │   │
+│  │           │  • Storage: PD-SSD    │                                      │   │
+│  │           └───────────────────────┘                                      │   │
+│  └───────────────────────────────────────────────────────────────────────_──┘   │
+│                                                                                 │
+│  ┌──────────────────────────────────────────────────────────────────────────┐   │
+│  │              MinIO Namespace (Object Storage - HA)                       │   │
+│  │                                                                          │   │
+│  │  ┌──────┐  ┌──────┐  ┌──────┐  ┌──────┐                                  │   │
+│  │  │MinIO │  │MinIO │  │MinIO │  │MinIO │                                  │   │
+│  │  │Pod-0 │  │Pod-1 │  │Pod-2 │  │Pod-3 │                                  │   │
+│  │  │      │  │      │  │      │  │      │                                  │   │
+│  │  │:9000 │  │:9000 │  │:9000 │  │:9000 │                                  │   │
+│  │  │:9001 │  │:9001 │  │:9001 │  │:9001 │                                  │   │
+│  │  └───┬──┘  └───┬──┘  └───┬──┘  └───┬──┘                                  │   │
+│  │      │         │         │         │                                     │   │
+│  │      └─────────┴─────────┴─────────┘                                     │   │
+│  │                    │                                                     │   │
+│  │            ┌───────▼────────┐                                            │   │
+│  │            │ Persistent Disk│                                            │   │
+│  │            │ (4x 10Gi SSD)  │                                            │   │
+│  │            └────────────────┘                                            │   │
+│  └──────────────────────────────────────────────────────────────────────────┘   │
+│                                                                                 │
+│  ┌──────────────────────────────────────────────────────────────────────────┐   │
+│  │                    External Access (GCP Load Balancers)                  │   │
+│  │                                                                          │   │
+│  │  • Kafka UI:        http://<lb-ip>:8080                                  │   │
+│  │  • Flowise:         http://<lb-ip>:3000                                  │   │
+│  │  • Trino HTTPS:     https://<lb-ip>:8443                                 │   │
+│  │  • MinIO Console:   http://<lb-ip>:9001                                  │   │
+│  │  • Kafka Brokers:   <kafka-0-lb>:9094, <kafka-1-lb>:9094                 │   │
+│  └──────────────────────────────────────────────────────────────────────────┘   │
+│                                                                                 │
+│  ┌──────────────────────────────────────────────────────────────────────────┐   │
+│  │                    Public Subnet                                         │   │
+│  │                                                                          │   │
+│  │  ┌────────────────────┐                                                  │   │
+│  │  │ Bastion Host       │                                                  │   │
+│  │  │ (e2-micro)         │                                                  │   │
+│  │  │                    │                                                  │   │
+│  │  │ • SSH via IAP      │                                                  │   │
+│  │  │ • kubectl access   │                                                  │   │
+│  │  └────────────────────┘                                                  │   │
+│  └──────────────────────────────────────────────────────────────────────────┘   │
+│                                                                                 │
+│  ┌──────────────────────────────────────────────────────────────────────────┐   │
+│  │                    Data Flow                                             │   │
+│  │                                                                          │   │
+│  │  Producer → Kafka → Flink → Trino → MinIO                                │   │
+│  │              ▲       │       ▲       ▲                                   │   │
+│  │              │       │       │       │                                   │   │
+│  │              │       └───────┘       │                                   │   │
+│  │              │                       │                                   │   │
+│  │           Flowise ───────────────────┘                                   │   │
+│  │         (AI Workflows & Vector Processing)                               │   │
+│  └──────────────────────────────────────────────────────────────────────────┘   │
+│                                                                                 │
+└─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Components
 
-### 1. Trino Query Engine
+### 1. Apache Kafka (Streaming Platform)
+
+**Purpose**: Distributed event streaming platform for real-time data pipelines and streaming applications
+
+**Architecture**:
+- **KRaft Mode**: No Zookeeper dependency (Kafka 3.8.1+)
+- **Brokers**: 2 replicas with combined broker/controller roles
+- **HA Configuration**: High availability with replication factor 2
+
+**Features**:
+- **Auto-topic creation** enabled
+- **Replication**: Factor 2 for fault tolerance
+- **Retention**: 7 days (168 hours)
+- **External Access**: Per-broker LoadBalancer for external clients
+
+**UI Management**:
+- **Kafka UI**: Web interface for cluster monitoring
+- **External LoadBalancer**: Public access on port 8080
+
+**Resources**:
+- Request: 512Mi RAM, 250m CPU per broker
+- Limit: 1Gi RAM, 500m CPU per broker
+- Storage: 5Gi per broker (standard-rwo)
+
+**Access**:
+- Internal: `kafka-0.kafka-headless.kafka.svc.cluster.local:9092`
+- External: `<kafka-0-external-lb>:9094`
+
+### 2. Apache Flink Operator
+
+**Purpose**: Kubernetes operator for deploying and managing Apache Flink clusters
+
+**Architecture**:
+- **Flink Operator**: Manages FlinkDeployment custom resources
+- **Session Mode**: Long-running cluster for multiple jobs
+- **Native Kubernetes Integration**: Dynamic resource allocation
+
+**Capabilities**:
+- **Job Management**: Deploy, update, and monitor Flink jobs
+- **HA Support**: Kubernetes-based high availability
+- **Checkpointing**: Automatic state management
+- **Savepoints**: Manual state snapshots for upgrades
+
+**Typical Deployment**:
+- **JobManager**: 1 replica, 1Gi memory, 1 CPU
+- **TaskManager**: 2 replicas, 1Gi memory, 1 CPU each
+- **Task Slots**: 2 per TaskManager
+
+**Features**:
+- Docker-in-Docker support for Python SDK jobs
+- Beam integration for unified batch/streaming
+- State backends: filesystem, RocksDB
+- GCS integration for checkpoints/savepoints
+
+### 3. Flowise (Low-Code AI Orchestration)
+
+**Purpose**: Visual builder for AI workflows and LangChain applications
+
+**Architecture**:
+- **Flowise Server**: Node.js application with web UI
+- **PostgreSQL 15**: Persistent storage for workflows and configs
+- **Persistent Storage**: 10Gi for app data, 20Gi for database
+
+**Features**:
+- **Visual Flow Builder**: Drag-and-drop interface for AI chains
+- **LLM Integration**: OpenAI, Anthropic, Vertex AI, local models
+- **Vector Stores**: Support for embeddings and retrieval
+- **API Deployment**: Auto-generate APIs from flows
+
+**Credentials**:
+- Username: `admin`
+- Password: `admin123`
+
+**Database**:
+- PostgreSQL 15
+- Database: `flowise`
+- Storage: 20Gi persistent disk (standard-rwo)
+
+**Resources**:
+- Flowise: 1Gi-4Gi RAM, 500m-2000m CPU
+- PostgreSQL: 512Mi-1Gi RAM, 500m-1000m CPU
+
+**Access**:
+- Web UI: External LoadBalancer port 3000
+- Healthz: `/healthz` endpoint
+
+### 4. Trino Query Engine
 
 **Purpose**: Distributed SQL query engine for data lakehouse workloads
 
@@ -123,7 +269,7 @@ The AIchemy platform provides a complete data lakehouse solution with support fo
 - Request: 4Gi RAM, 2 CPU per pod
 - Limit: 8Gi RAM, 4 CPU per pod
 
-### 2. MinIO Object Storage (HA)
+### 5. MinIO Object Storage (HA)
 
 **Purpose**: S3-compatible object storage for data lake files
 
@@ -144,7 +290,7 @@ The AIchemy platform provides a complete data lakehouse solution with support fo
 - Access Key: `admin`
 - Secret Key: `password123`
 
-### 3. Hive Metastore
+### 6. Hive Metastore
 
 **Purpose**: Centralized metadata catalog for all table formats
 
@@ -157,7 +303,7 @@ The AIchemy platform provides a complete data lakehouse solution with support fo
 - PostgreSQL JDBC driver (auto-downloaded)
 - Hadoop AWS + AWS SDK bundles (auto-downloaded)
 
-### 4. PostgreSQL Database
+### 7. PostgreSQL Database
 
 **Purpose**: Persistent metadata storage for Hive Metastore
 
@@ -333,7 +479,93 @@ kubectl version --client
 gke-gcloud-auth-plugin --version
 ```
 
-### Step 5: Deploy MinIO
+### Step 5: Deploy Kafka (Optional - for streaming)
+
+```bash
+# Apply Kafka HA configuration
+kubectl apply -f gcp-kafka-ha.yml
+
+# Wait for Kafka brokers to be ready
+kubectl wait --for=condition=ready pod -l app=kafka -n kafka --timeout=300s
+
+# Verify deployment
+kubectl get pods -n kafka
+kubectl get pvc -n kafka
+kubectl get svc -n kafka
+```
+
+**Get LoadBalancer IPs for external access:**
+```bash
+# Get Kafka UI LoadBalancer IP
+kubectl get svc kafka-ui -n kafka
+
+# Get individual broker LoadBalancer IPs
+kubectl get svc kafka-0-external -n kafka
+kubectl get svc kafka-1-external -n kafka
+```
+
+**Update external hosts ConfigMap:**
+```bash
+# Save the LoadBalancer IPs
+KAFKA_0_IP=$(kubectl get svc kafka-0-external -n kafka -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+KAFKA_1_IP=$(kubectl get svc kafka-1-external -n kafka -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+
+# Update ConfigMap
+kubectl patch configmap kafka-external-hosts -n kafka --type merge -p "{\"data\":{\"kafka-0\":\"$KAFKA_0_IP\",\"kafka-1\":\"$KAFKA_1_IP\"}}"
+
+# Restart Kafka pods to pick up new configuration
+kubectl rollout restart statefulset kafka -n kafka
+```
+
+**Access Kafka UI:**
+```bash
+KAFKA_UI_IP=$(kubectl get svc kafka-ui -n kafka -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+echo "Kafka UI: http://$KAFKA_UI_IP:8080"
+```
+
+### Step 6: Deploy Flink Operator (Optional - for stream processing)
+
+```bash
+# Install Flink Kubernetes Operator using Helm
+helm repo add flink-operator-repo https://downloads.apache.org/flink/flink-kubernetes-operator-1.8.0/
+helm repo update
+
+# Install operator
+helm install flink-kubernetes-operator flink-operator-repo/flink-kubernetes-operator \
+  --namespace flink --create-namespace
+
+# Verify operator is running
+kubectl get pods -n flink
+
+# Deploy a Basic Example
+kubectl create -f https://raw.githubusercontent.com/apache/flink-kubernetes-operator/release-1.13/examples/basic.yaml
+
+# Deploy a Flink session cluster (see examples in python/beam-flink-test/)
+```
+
+### Step 7: Deploy Flowise (Optional - for AI workflows)
+
+```bash
+# Apply Flowise configuration
+kubectl apply -f gcp-flowise.yml
+
+# Wait for pods to be ready
+kubectl wait --for=condition=ready pod -l app=flowise -n flowise --timeout=300s
+
+# Verify deployment
+kubectl get pods -n flowise
+kubectl get pvc -n flowise
+kubectl get svc -n flowise
+```
+
+**Access Flowise UI:**
+```bash
+FLOWISE_IP=$(kubectl get svc flowise -n flowise -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+echo "Flowise UI: http://$FLOWISE_IP:3000"
+echo "Login: admin / admin123"
+```
+
+### Step 8: Deploy MinIO
 
 ```bash
 # Apply MinIO HA configuration
@@ -347,7 +579,7 @@ kubectl get pods -n minio
 kubectl get pvc -n minio
 ```
 
-### Step 6: Deploy Trino with HTTPS & Auth
+### Step 9: Deploy Trino with HTTPS & Auth
 
 ```bash
 # Apply Trino configuration
@@ -361,7 +593,7 @@ kubectl get pods -n trino
 kubectl get svc -n trino
 ```
 
-### Step 7: Get Load Balancer External IP
+### Step 10: Get Load Balancer External IP
 
 ```bash
 # Get Trino external service IP
@@ -464,6 +696,159 @@ Access at: http://localhost:9001
 - Password: `password123`
 
 ## Example Queries
+
+### Kafka Streaming
+
+#### Python Producer (External Access)
+```python
+from kafka import KafkaProducer
+import json
+import time
+
+# Use the LoadBalancer external IP from Step 5
+producer = KafkaProducer(
+    bootstrap_servers=['<KAFKA-BROKER-0-EXTERNAL-IP>:9094', 
+                       '<KAFKA-BROKER-1-EXTERNAL-IP>:9094'],
+    value_serializer=lambda v: json.dumps(v).encode('utf-8'),
+    acks='all',
+    retries=3
+)
+
+# Send messages
+for i in range(100):
+    message = {
+        'id': i,
+        'timestamp': time.time(),
+        'data': f'Sample message {i}'
+    }
+    producer.send('test-topic', value=message)
+    print(f'Sent: {message}')
+    time.sleep(1)
+
+producer.flush()
+producer.close()
+```
+
+#### Python Consumer (External Access)
+```python
+from kafka import KafkaConsumer
+import json
+
+# Use the LoadBalancer external IP from Step 5
+consumer = KafkaConsumer(
+    'test-topic',
+    bootstrap_servers=['<KAFKA-BROKER-0-EXTERNAL-IP>:9094', 
+                       '<KAFKA-BROKER-1-EXTERNAL-IP>:9094'],
+    value_deserializer=lambda m: json.loads(m.decode('utf-8')),
+    auto_offset_reset='earliest',
+    enable_auto_commit=True,
+    group_id='my-consumer-group'
+)
+
+print('Consuming messages...')
+for message in consumer:
+    print(f'Received: {message.value}')
+```
+
+#### Kafka Topic Management
+```bash
+# Create topic
+kubectl -n kafka exec -it kafka-0 -- kafka-topics.sh \
+  --bootstrap-server kafka-0.kafka-headless.kafka.svc.cluster.local:9092 \
+  --create --topic test-topic --partitions 3 --replication-factor 2
+
+# List topics
+kubectl -n kafka exec -it kafka-0 -- kafka-topics.sh \
+  --bootstrap-server kafka-0.kafka-headless.kafka.svc.cluster.local:9092 \
+  --list
+
+# Describe topic
+kubectl -n kafka exec -it kafka-0 -- kafka-topics.sh \
+  --bootstrap-server kafka-0.kafka-headless.kafka.svc.cluster.local:9092 \
+  --describe --topic test-topic
+
+# Console producer (for testing)
+kubectl -n kafka exec -it kafka-0 -- kafka-console-producer.sh \
+  --bootstrap-server kafka-0.kafka-headless.kafka.svc.cluster.local:9092 \
+  --topic test-topic
+
+# Console consumer (for testing)
+kubectl -n kafka exec -it kafka-0 -- kafka-console-consumer.sh \
+  --bootstrap-server kafka-0.kafka-headless.kafka.svc.cluster.local:9092 \
+  --topic test-topic --from-beginning
+```
+
+### Flowise Workflows
+
+#### Access Flowise UI
+```bash
+# Get LoadBalancer external IP
+kubectl -n flowise get svc flowise
+
+# Open browser: http://<FLOWISE-EXTERNAL-IP>:3000
+```
+
+#### Example Workflow: RAG with Vector Store
+1. **Create a Chatflow:**
+   - Open Flowise UI at `http://<FLOWISE-EXTERNAL-IP>:3000`
+   - Click "Add New Chatflow"
+   - Add nodes:
+     - Document Loader → PDF File
+     - Text Splitter → Recursive Character Text Splitter
+     - Embeddings → OpenAI Embeddings
+     - Vector Store → Lance
+     - Retriever → Lance Retriever
+     - LLM → ChatOpenAI
+     - Chain → Conversational Retrieval QA Chain
+
+2. **Test the Workflow:**
+   - Upload a PDF document
+   - Ask questions in the chat interface
+   - The system will retrieve relevant context from Lance vector store
+
+#### Flowise API Usage
+```python
+import requests
+import json
+
+# Flowise API endpoint
+FLOWISE_URL = "http://<FLOWISE-EXTERNAL-IP>:3000/api/v1/prediction/<CHATFLOW_ID>"
+
+# Send query
+response = requests.post(
+    FLOWISE_URL,
+    json={
+        "question": "What is the main topic of the document?",
+        "overrideConfig": {
+            "temperature": 0.7
+        }
+    }
+)
+
+result = response.json()
+print(f"Answer: {result['text']}")
+```
+
+#### Connect Flowise to Trino (for data queries)
+1. In Flowise UI, add a "Custom Tool" node
+2. Configure it to query Trino via HTTP:
+```javascript
+const { Client } = require('trino-client');
+
+const client = new Client({
+    server: 'http://trino.trino.svc.cluster.local:8080',
+    catalog: 'iceberg',
+    schema: 'ic_test'
+});
+
+async function queryTrino(sql) {
+    const result = await client.query(sql);
+    return result;
+}
+
+// Use in tool function
+const answer = await queryTrino("SELECT COUNT(*) FROM orders");
+```
 
 ### Iceberg Table
 ```sql
@@ -607,6 +992,111 @@ kubectl logs -n minio -l app=minio -f
 ```
 
 ## Troubleshooting
+
+### Kafka Broker Issues
+
+```bash
+# Check broker status
+kubectl get pods -n kafka
+kubectl describe pod kafka-0 -n kafka
+
+# Check broker logs
+kubectl logs kafka-0 -n kafka
+kubectl logs kafka-1 -n kafka
+
+# Verify LoadBalancer provisioning
+kubectl get svc -n kafka
+kubectl describe svc kafka-0-external -n kafka
+
+# Check broker connectivity (from bastion)
+telnet <KAFKA-BROKER-0-EXTERNAL-IP> 9094
+
+# Verify controller election
+kubectl -n kafka exec -it kafka-0 -- kafka-metadata.sh \
+  --snapshot /var/lib/kafka/data/__cluster_metadata-0/00000000000000000000.log \
+  --print-controllers
+
+# Check cluster metadata
+kubectl -n kafka exec -it kafka-0 -- kafka-metadata.sh \
+  --snapshot /var/lib/kafka/data/__cluster_metadata-0/00000000000000000000.log \
+  --print-brokers
+
+# Force restart if needed
+kubectl delete pod kafka-0 -n kafka
+kubectl delete pod kafka-1 -n kafka
+```
+
+### Flink Operator Issues
+
+```bash
+# Check operator status
+kubectl get pods -n flink-operator-system
+kubectl logs -n flink-operator-system deployment/flink-kubernetes-operator
+
+# Verify CRD installation
+kubectl get crds | grep flink
+
+# Check Flink deployment status
+kubectl get flinkdeployment -A
+kubectl describe flinkdeployment <deployment-name> -n <namespace>
+
+# Operator webhook issues
+kubectl get validatingwebhookconfigurations
+kubectl get mutatingwebhookconfigurations
+
+# Delete and reinstall if webhook conflicts
+kubectl delete validatingwebhookconfiguration flink-operator-webhook-configuration
+helm uninstall flink-kubernetes-operator -n flink-operator-system
+helm install flink-kubernetes-operator flink-operator-repo/flink-kubernetes-operator -n flink-operator-system
+```
+
+### Flowise Connection Issues
+
+```bash
+# Check Flowise pods
+kubectl get pods -n flowise
+kubectl describe pod <flowise-pod> -n flowise
+
+# Check logs
+kubectl logs -n flowise deployment/flowise
+kubectl logs -n flowise deployment/flowise-db
+
+# Verify database connectivity
+kubectl -n flowise exec -it deployment/flowise-db -- psql -U flowise -d flowise -c '\l'
+
+# Check LoadBalancer provisioning
+kubectl get svc -n flowise
+kubectl describe svc flowise -n flowise
+
+# Test connectivity from bastion
+curl http://<FLOWISE-EXTERNAL-IP>:3000/api/v1/health
+
+# Database initialization issues
+kubectl -n flowise exec -it deployment/flowise-db -- psql -U flowise -d flowise -c '\dt'
+
+# Restart Flowise if needed
+kubectl rollout restart deployment/flowise -n flowise
+```
+
+### LoadBalancer Provisioning Delays
+
+```bash
+# GCP LoadBalancers can take 2-5 minutes to provision
+# Check service status
+kubectl get svc -A | grep LoadBalancer
+
+# Describe specific service
+kubectl describe svc <service-name> -n <namespace>
+
+# Check GCP load balancer console
+gcloud compute forwarding-rules list
+gcloud compute target-pools list
+gcloud compute backend-services list
+
+# Force recreation if stuck
+kubectl delete svc <service-name> -n <namespace>
+kubectl apply -f <manifest-file>
+```
 
 ### Cannot Connect to Bastion
 

@@ -1,0 +1,15 @@
+FROM flink:1.18.1-scala_2.12-java11
+
+USER root
+
+# Minimal additions for PROCESS: Python + Apache Beam SDK
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends python3 python3-pip ca-certificates; \
+    pip3 install --no-cache-dir "apache-beam[gcp]==2.60.0"; \
+    mkdir -p /tmp/flink-checkpoints /tmp/flink-savepoints /tmp/flink-ha; \
+    chown -R flink:flink /tmp/flink-checkpoints /tmp/flink-savepoints /tmp/flink-ha; \
+    chmod 755 /tmp/flink-checkpoints /tmp/flink-savepoints /tmp/flink-ha; \
+    rm -rf /var/lib/apt/lists/*
+
+USER flink

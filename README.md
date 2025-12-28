@@ -16,78 +16,105 @@ The platform is cloud-native, Kubernetes-based, and can be deployed on multiple 
 ### System Components
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                         Client Layer                                │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐               │
-│  │   Python     │  │  Trino CLI   │  │  Web Apps    │               │
-│  │   Client     │  │              │  │              │               │
-│  └──────────────┘  └──────────────┘  └──────────────┘               │
-└─────────────────────────────────────────────────────────────────────┘
-                              │
-                              │ HTTPS (Authentication)
-                              ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                      Query Engine Layer                             │
-│  ┌──────────────────────────────────────────────────────────────┐   │
-│  │                    Trino Cluster                             │   │
-│  │                                                              │   │
-│  │  ┌──────────────┐       ┌──────────────┐  ┌──────────────┐   │   │
-│  │  │ Coordinator  │────►  │   Worker 1   │  │   Worker 2   │   │   │
-│  │  │              │       │              │  │              │   │   │
-│  │  │ • Planning   │       │ • Execution  │  │ • Execution  │   │   │
-│  │  │ • Scheduling │       │ • Processing │  │ • Processing │   │   │
-│  │  │ • Aggregation│       │              │  │              │   │   │
-│  │  └──────────────┘       └──────────────┘  └──────────────┘   │   │
-│  └──────────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────────┘
-                              │
-                              │ Thrift Protocol
-                              ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                     Metadata Layer                                  │
-│  ┌───────────────────────────────────────────────────────────────┐  │
-│  │              Hive Metastore (Catalog Service)                 │  │
-│  │                                                               │  │
-│  │  • Table Schemas                                              │  │
-│  │  • Partition Information                                      │  │
-│  │  • Storage Locations                                          │  │
-│  │  • Column Statistics                                          │  │
-│  └───────────────────────────┬───────────────────────────────────┘  │
-│                              │                                      │
-│                              │ JDBC                                 │
-│                              ▼                                      │
-│  ┌───────────────────────────────────────────────────────────────┐  │
-│  │                     PostgreSQL                                │  │
-│  │              (Persistent Metadata Storage)                    │  │
-│  └───────────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────────┘
-                              │
-                              │ S3 API
-                              ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                      Storage Layer                                  │
-│  ┌──────────────────────────────────────────────────────────────┐   │
-│  │                  MinIO Object Storage (HA)                   │   │
-│  │                                                              │   │
-│  │  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐          │   │
-│  │  │ Node 0  │  │ Node 1  │  │ Node 2  │  │ Node 3  │          │   │
-│  │  │         │  │         │  │         │  │         │          │   │
-│  │  │ Bucket  │  │ Bucket  │  │ Bucket  │  │ Bucket  │          │   │
-│  │  │ Shards  │  │ Shards  │  │ Shards  │  │ Shards  │          │   │
-│  │  └─────────┘  └─────────┘  └─────────┘  └─────────┘          │   │
-│  │                                                              │   │
-│  │  Erasure Coding: Tolerates up to 2 node failures             │   │
-│  └──────────────────────────────────────────────────────────────┘   │
-│                              │                                      │
-│  ┌──────────────────────────────────────────────────────────────┐   │
-│  │                    Data Lake Storage                         │   │
-│  │                                                              │   │
-│  │  ├─ /warehouse          (Hive tables)                        │   │
-│  │  ├─ /iceberg-bucket     (Iceberg tables)                     │   │
-│  │  ├─ /delta-bucket       (Delta Lake tables)                  │   │
-│  │  └─ /lance-bucket       (Lance vector embeddings)            │   │
-│  └──────────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────────────┐
+│                                Client Layer                                    │
+│  ┌────────────────┐  ┌────────────────┐  ┌────────────────┐                    │
+│  │  Python Client │  │   Trino CLI    │  │   Web Apps     │                    │
+│  └────────────────┘  └────────────────┘  └────────────────┘                    │
+└────────────────────────────────────────────────────────────────────────────────┘
+                                   │
+                    ┌──────────────┼──────────────┐
+                    │              │              │
+                    ▼              ▼              ▼
+┌────────────────────────────────────────────────────────────────────────────────┐
+│                        OPTIONAL: Real-Time Pipeline Layer                      │
+│  ┌─────────────────────────────────────────────────────────────────────────┐   │
+│  │              Kafka Message Broker (Streaming Events)                    │   │
+│  │              Topic-based pub/sub for event ingestion                    │   │
+│  │              ├─ KRaft mode (no Zookeeper)                               │   │
+│  │              └─ HA with multiple brokers                                │   │
+│  └────────────────────────┬────────────────────────────────────────────────┘   │
+│                           │                                                    │
+│                           ▼                                                    │
+│  ┌─────────────────────────────────────────────────────────────────────────┐   │
+│  │              Flink Stream Processing (Kubernetes Operator)              │   │
+│  │              Real-time transformations and aggregations                 │   │
+│  │              ├─ JobManager + TaskManagers                               │   │
+│  │              ├─ Kafka source/sink integration                           │   │
+│  │              └─ Result to Iceberg/Lance tables                          │   │
+│  └────────────────────────┬────────────────────────────────────────────────┘   │
+│                           │                                                    │
+└───────────────────────────┼────────────────────────────────────────────────────┘
+                            │
+┌──────────────────────────────────────────────────────────────────────────────────┐
+│                      Query Engine Layer (Core)                                   │
+│  ┌──────────────────────────────────────────────────────────────────────────┐    │
+│  │                      Trino Cluster (SQL Query)                           │    │
+│  │                                                                          │    │
+│  │  ┌──────────────┐       ┌──────────────┐  ┌──────────────┐               │    │
+│  │  │ Coordinator  │────►  │   Worker 1   │  │   Worker 2   │               │    │
+│  │  │              │       │              │  │              │               │    │
+│  │  │ • Planning   │       │ • Execution  │  │ • Execution  │               │    │
+│  │  │ • Scheduling │       │ • Processing │  │ • Processing │               │    │
+│  │  │ • Aggregation│       │              │  │              │               │    │
+│  │  └──────────────┘       └──────────────┘  └──────────────┘               │    │
+│  └──────────────────────────────────────────────────────────────────────────┘    │
+└──────────────────────────────────────────────────────────────────────────────────┘
+                                   │
+                    ┌──────────────┼──────────────┐
+                    │              │              │
+                    ▼              ▼              ▼
+         ┌──────────────────┐  ┌──────────────────────────────┐
+         │   Thrift Protocol│  │  OPTIONAL: Flowise AI        │
+         │                  │  │  Workflow Builder            │
+         │                  │  │  ├─ LangChain Integration    │
+         │                  │  │  ├─ Vector Store Support     │
+         │                  │  │  └─ REST API for Workflows   │
+         └────────┬─────────┘  └──────────────────────────────┘
+                  │
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                        Metadata Layer                                           │
+│  ┌────────────────────────────────────────────────────────────────────────────┐ │
+│  │                 Hive Metastore (Catalog Service)                           │ │
+│  │                                                                            │ │
+│  │  • Table Schemas       • Column Statistics                                 │ │
+│  │  • Partition Info      • Storage Locations                                 │ │
+│  └────────────────────────────┬───────────────────────────────────────────────┘ │
+│                               │                                                 │
+│                               │ JDBC                                            │
+│                               ▼                                                 │
+│  ┌────────────────────────────────────────────────────────────────────────────┐ │
+│  │                      PostgreSQL Database                                   │ │
+│  │  (Persistent metadata storage for Hive + OPTIONAL Flowise workflows)       │ │
+│  └────────────────────────────────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────────────────────────┘
+                                   │
+                                   │ S3 API
+                                   ▼
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                         Storage Layer                                           │
+│  ┌────────────────────────────────────────────────────────────────────────────┐ │
+│  │                   MinIO Object Storage (HA)                                │ │
+│  │                                                                            │ │
+│  │  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐                        │ │
+│  │  │ Node 0  │  │ Node 1  │  │ Node 2  │  │ Node 3  │                        │ │
+│  │  │         │  │         │  │         │  │         │                        │ │
+│  │  │ Bucket  │  │ Bucket  │  │ Bucket  │  │ Bucket  │                        │ │
+│  │  │ Shards  │  │ Shards  │  │ Shards  │  │ Shards  │                        │ │
+│  │  └─────────┘  └─────────┘  └─────────┘  └─────────┘                        │ │
+│  │                                                                            │ │
+│  │  Erasure Coding: Tolerates up to 2 node failures                           │ │
+│  └────────────────────────────────────────────────────────────────────────────┘ │
+│                                   │                                             │
+│  ┌────────────────────────────────────────────────────────────────────────────┐ │
+│  │                     Data Lake Storage                                      │ │
+│  │                                                                            │ │
+│  │  ├─ /warehouse        (Hive tables)                                        │ │
+│  │  ├─ /iceberg-bucket   (Iceberg tables)                                     │ │
+│  │  ├─ /delta-bucket     (Delta Lake tables)                                  │ │
+│  │  └─ /lance-bucket     (Lance vector embeddings)                            │ │
+│  └────────────────────────────────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Core Components
@@ -144,6 +171,82 @@ The platform is cloud-native, Kubernetes-based, and can be deployed on multiple 
 - Optimized for read-heavy analytics workloads
 - Versioning support for data lineage
 - Lifecycle policies for data management
+
+### Optional Components
+
+#### 1. Apache Kafka
+**Distributed message broker for real-time streaming**
+
+- Event-driven data ingestion pipeline
+- KRaft mode deployment (no Zookeeper dependency)
+- High availability with multiple brokers (2+ replicas)
+- Topic-based pub/sub for decoupled systems
+- Integration with Flink for stream processing
+- External access via Network Load Balancers
+
+**Key Features**:
+- Configurable retention policies (default: 7 days)
+- Partition-based parallel consumption
+- Exactly-once semantics support
+- Consumer group management
+- Kafka UI for monitoring and topic management
+
+**Use Cases**:
+- Real-time data ingestion
+- Event streaming from applications
+- Change data capture (CDC) pipelines
+- IoT sensor data collection
+
+#### 2. Apache Flink (Kubernetes Operator)
+**Stream processing engine for real-time transformations**
+
+- CRD-based deployment management via Kubernetes Operator
+- Session cluster with JobManager + TaskManagers
+- Supports both batch and stream processing
+- Direct Kafka source/sink integration
+- Write results to Iceberg/Lance tables
+- Savepoint/Checkpoint for fault tolerance
+
+**Key Features**:
+- Low-latency processing (milliseconds)
+- Stateful stream processing
+- Event time and watermarking
+- Complex event processing (CEP)
+- SQL API for stream queries
+- Job restart and recovery policies
+
+**Use Cases**:
+- Real-time aggregations and transformations
+- Stream joining with historical data
+- Anomaly detection
+- Real-time feature engineering for ML
+
+#### 3. Flowise AI Workflows
+**Low-code platform for building AI workflows and LLM applications**
+
+- Drag-and-drop UI for workflow builder
+- LangChain framework integration
+- Support for multiple LLM providers (OpenAI, Anthropic, etc.)
+- Vector store integration (Lance, Pinecone, Weaviate)
+- Retrieval-Augmented Generation (RAG) support
+- PostgreSQL backend for workflow persistence
+- REST API exposure for deployed workflows
+
+**Key Features**:
+- Custom tool creation and chaining
+- Document ingestion and embedding
+- Semantic search capabilities
+- Workflow versioning and deployment
+- Integration with Trino for data queries
+- Integration with MinIO for document storage
+
+**Use Cases**:
+- Building AI chatbots
+- Document question-answering systems
+- Semantic search applications
+- RAG-based applications
+- Knowledge base integration
+- Multi-step AI workflows
 
 ### Data Flow
 
@@ -287,23 +390,46 @@ The platform is cloud-native, Kubernetes-based, and can be deployed on multiple 
 - Support for structured and semi-structured data
 - Schema evolution without downtime
 
-#### 2. Machine Learning Pipelines
+#### 2. Real-Time Analytics (with Kafka + Flink)
+- Ingest streaming data via Kafka
+- Process and transform in real-time with Flink
+- Store processed results in Iceberg/Lance tables
+- Query fresh data with Trino for dashboards
+- Low-latency insights on continuously updated data
+
+#### 3. AI/ML Pipelines (with Flowise + Lance)
+- Build RAG applications with Flowise
+- Store embeddings in Lance format
+- Semantic search across documents
+- Query structured data via Trino for context
+- LLM-powered insights and recommendations
+
+#### 4. Streaming Data Pipeline (Kafka → Flink → Trino)
+- Event ingestion via Kafka topics
+- Stream processing and enrichment with Flink
+- Results written to data lake (MinIO)
+- Analytics queries with Trino
+- Real-time dashboards and alerts
+
+#### 5. Machine Learning Workflows
 - Vector embeddings storage with Lance format
 - Feature store for ML models
 - Model training data preparation
 - Inference data serving
+- Integration with AI workflows (Flowise)
 
-#### 3. Real-Time Analytics
-- Low-latency queries on recent data
-- Incremental updates with Iceberg/Delta
-- Time travel for historical analysis
-- Change data capture (CDC) integration
-
-#### 4. Data Science Workbench
+#### 6. Data Science Workbench
 - Interactive exploration with SQL
 - Integration with Jupyter notebooks
 - Python client for programmatic access
 - Support for complex analytics (window functions, aggregations)
+
+#### 7. AI Chatbot with Knowledge Base (Flowise + Trino + MinIO)
+- Document upload and embedding (Flowise)
+- Vector search for semantic matching (Lance)
+- Query structured data from Trino for context
+- LLM-based response generation
+- REST API for application integration
 
 ## Repository Structure
 
@@ -335,17 +461,27 @@ AIchemy/
 1. **Local Development (Minikube)**
    - See [minikube/README.md](minikube/README.md)
    - Requires: 8GB RAM, 4 CPUs, 40GB disk
-   - Setup time: ~10 minutes
+   - Setup time: ~10 minutes (core) / ~15 minutes (with optional components)
 
 2. **AWS Production (EKS)**
    - See [aws/README.md](aws/README.md)
    - Requires: AWS account with billing enabled
-   - Setup time: ~20 minutes
+   - Setup time: ~20 minutes (core) / ~30 minutes (with optional components)
 
 3. **GCP Production (GKE)**
    - See [gcp/README.md](gcp/README.md)
    - Requires: GCP account with billing enabled
-   - Setup time: ~15 minutes
+   - Setup time: ~15 minutes (core) / ~25 minutes (with optional components)
+
+### Optional Components
+
+Each deployment environment supports optional components:
+
+- **Kafka**: Enable real-time data streaming (recommended for event-driven architectures)
+- **Flink Kubernetes Operator**: Add stream processing capabilities (recommended for real-time transformations)
+- **Flowise**: Add AI workflow builder (recommended for LLM-based applications)
+
+Optional components are deployed separately and can be enabled/disabled independently. See environment-specific README files for deployment instructions.
 
 ### Basic Operations
 

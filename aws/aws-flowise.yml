@@ -1,0 +1,376 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: flowise
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-pvc
+  namespace: flowise
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: "gp3"
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: flowise-pvc
+  namespace: flowise
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: "gp3"
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-config
+  namespace: flowise
+data:
+  POSTGRES_DB: "flowise"
+  POSTGRES_USER: "flowise"
+  POSTGRES_PASSWORD: "flowise123"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: flowise-config
+  namespace: flowise
+data:
+  DATABASE_TYPE: "postgres"
+  DATABASE_HOST: "postgres"
+  DATABASE_PORT: "5432"
+  DATABASE_NAME: "flowise"
+  DATABASE_USER: "flowise"
+  DATABASE_PASSWORD: "flowise123"
+  FLOWISE_PORT: "3000"
+  FLOWISE_USERNAME: "admin"
+  FLOWISE_PASSWORD: "admin123"
+  DEBUG: "false"
+  # AWS specific settings
+  APIKEY_PATH: "/opt/flowise/keys"
+  LOG_PATH: "/opt/flowise/logs"
+  SECRETKEY_PATH: "/opt/flowise/secrets"
+  # CORS settings for ALB
+  CORS_ORIGINS: "*"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: flowise
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      affinity:
+        # Distribuzione su zone AWS diverse per alta disponibilità
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - postgres
+              topologyKey: topology.kubernetes.io/zone
+          - weight: 50
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - postgres
+              topologyKey: kubernetes.io/hostname
+      containers:
+      - name: postgres
+        image: postgres:15-alpine
+        env:
+        - name: POSTGRES_DB
+          valueFrom:
+            configMapKeyRef:
+              name: postgres-config
+              key: POSTGRES_DB
+        - name: POSTGRES_USER
+          valueFrom:
+            configMapKeyRef:
+              name: postgres-config
+              key: POSTGRES_USER
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            configMapKeyRef:
+              name: postgres-config
+              key: POSTGRES_PASSWORD
+        - name: PGDATA
+          value: "/var/lib/postgresql/data/pgdata"
+        # AWS EBS optimization
+        - name: POSTGRES_INITDB_ARGS
+          value: "-E UTF8 --locale=en_US.UTF-8"
+        ports:
+        - containerPort: 5432
+          name: postgres
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+        volumeMounts:
+        - name: postgres-storage
+          mountPath: /var/lib/postgresql/data
+        livenessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - pg_isready -U flowise
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - pg_isready -U flowise
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+      volumes:
+      - name: postgres-storage
+        persistentVolumeClaim:
+          claimName: postgres-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: flowise
+spec:
+  selector:
+    app: postgres
+  ports:
+  - port: 5432
+    targetPort: 5432
+    name: postgres
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flowise
+  namespace: flowise
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: flowise
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: flowise
+    spec:
+      affinity:
+        # Distribuzione su zone AWS diverse per alta disponibilità
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - flowise
+              topologyKey: topology.kubernetes.io/zone
+          - weight: 50
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - flowise
+              topologyKey: kubernetes.io/hostname
+      containers:
+      - name: flowise
+        image: flowiseai/flowise:latest
+        env:
+        - name: DATABASE_TYPE
+          valueFrom:
+            configMapKeyRef:
+              name: flowise-config
+              key: DATABASE_TYPE
+        - name: DATABASE_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: flowise-config
+              key: DATABASE_HOST
+        - name: DATABASE_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: flowise-config
+              key: DATABASE_PORT
+        - name: DATABASE_NAME
+          valueFrom:
+            configMapKeyRef:
+              name: flowise-config
+              key: DATABASE_NAME
+        - name: DATABASE_USER
+          valueFrom:
+            configMapKeyRef:
+              name: flowise-config
+              key: DATABASE_USER
+        - name: DATABASE_PASSWORD
+          valueFrom:
+            configMapKeyRef:
+              name: flowise-config
+              key: DATABASE_PASSWORD
+        - name: FLOWISE_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: flowise-config
+              key: FLOWISE_PORT
+        - name: FLOWISE_USERNAME
+          valueFrom:
+            configMapKeyRef:
+              name: flowise-config
+              key: FLOWISE_USERNAME
+        - name: FLOWISE_PASSWORD
+          valueFrom:
+            configMapKeyRef:
+              name: flowise-config
+              key: FLOWISE_PASSWORD
+        - name: DEBUG
+          valueFrom:
+            configMapKeyRef:
+              name: flowise-config
+              key: DEBUG
+        - name: APIKEY_PATH
+          valueFrom:
+            configMapKeyRef:
+              name: flowise-config
+              key: APIKEY_PATH
+        - name: LOG_PATH
+          valueFrom:
+            configMapKeyRef:
+              name: flowise-config
+              key: LOG_PATH
+        - name: SECRETKEY_PATH
+          valueFrom:
+            configMapKeyRef:
+              name: flowise-config
+              key: SECRETKEY_PATH
+        - name: CORS_ORIGINS
+          valueFrom:
+            configMapKeyRef:
+              name: flowise-config
+              key: CORS_ORIGINS
+        # AWS specific optimizations
+        - name: NODE_OPTIONS
+          value: "--max-old-space-size=3072"
+        ports:
+        - containerPort: 3000
+          name: http
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "4Gi"
+            cpu: "2000m"
+        volumeMounts:
+        - name: flowise-storage
+          mountPath: /home/node/app/.flowise
+        - name: flowise-keys
+          mountPath: /opt/flowise/keys
+        - name: flowise-logs
+          mountPath: /opt/flowise/logs
+        - name: flowise-secrets
+          mountPath: /opt/flowise/secrets
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 3000
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 3000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+      volumes:
+      - name: flowise-storage
+        persistentVolumeClaim:
+          claimName: flowise-pvc
+      - name: flowise-keys
+        emptyDir: {}
+      - name: flowise-logs
+        emptyDir: {}
+      - name: flowise-secrets
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: flowise
+  namespace: flowise
+  annotations:
+    # Per Network Load Balancer interno (private subnet)
+    service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+    service.beta.kubernetes.io/aws-load-balancer-internal: "true"
+    # Per NLB esterno (internet-facing), sostituire le due righe sopra con:
+    # service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+    # service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
+    # 
+    # Per Application Load Balancer (supporta HTTPS/SSL):
+    # service.beta.kubernetes.io/aws-load-balancer-type: "alb"
+    # service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
+    # alb.ingress.kubernetes.io/target-type: "ip"
+    # alb.ingress.kubernetes.io/healthcheck-path: "/healthz"
+    #
+    # Cross-zone load balancing
+    service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled: "true"
+spec:
+  type: LoadBalancer
+  ports:
+  - port: 3000
+    targetPort: 3000
+    name: http
+    protocol: TCP
+  selector:
+    app: flowise
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 10800
