@@ -706,9 +706,28 @@ kubectl exec -it kafka-0 -n kafka -- /opt/kafka/bin/kafka-console-consumer.sh \
 ### Flowise AI Workflow Examples
 
 #### Access Flowise UI
-1. Port-forward: `kubectl port-forward -n flowise svc/flowise 3000:3000`
+1. Port-forward: `kubectl port-forward -n flowise svc/flowise 3000:3000` or via minikue service `minikube service flowise -n flowise --url`
 2. Open browser: http://localhost:3000
 3. Login with `admin` / `admin123`
+
+#### Reset dati flowise
+
+1. scalo a 0:
+`kubectl scale deployment flowise --replicas=0 -n flowise` 
+`kubectl scale deployment postgres --replicas=0 -n flowise` 
+`kubectl -n flowise get pods`
+
+2. cancello i pvc:
+`kubectl delete pvc postgres-pvc flowise-pvc -n flowise` 
+`kubectl -n flowise get pvc`
+
+3. applico il manifest:
+`kubectl apply -f mk-flowise.yml`
+`kubectl -n flowise get pods -w`
+
+4. query db postgress:
+`kubectl -n flowise exec postgres-6c6c6d56f9-crhp4 -- bash -c psql -U flowise -d flowise -c 'SELECT * FROM user LIMIT 3;'`
+
 
 #### Create a Simple LLM Chain
 1. Click **"Add New"** chatflow
